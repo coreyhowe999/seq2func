@@ -97,9 +97,7 @@ process SRA_DOWNLOAD {
         --temp "\$SCRATCH" \\
         --split-3 \\
         --threads ${task.cpus} \\
-        --skip-technical \\
-        --print-read-nr \\
-        --progress
+        --skip-technical
 
     echo "=== Step 2: Compress FASTQ files ==="
     if command -v pigz >/dev/null 2>&1; then

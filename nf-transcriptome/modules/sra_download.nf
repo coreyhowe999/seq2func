@@ -3,152 +3,138 @@
  * SRA Download Module
  * =============================================================================
  *
- * Downloads raw FASTQ files from NCBI's Sequence Read Archive using the
- * SRA Toolkit (prefetch + fasterq-dump).
- *
- * This module handles:
- *   - Downloading .sra files via prefetch (resumable, network-resilient)
- *   - Converting to FASTQ via fasterq-dump (multi-threaded)
- *   - Auto-detecting paired-end vs single-end layout
- *   - Extracting SRA metadata (organism, platform, read counts)
- *   - Compressing output with pigz/gzip
- *
- * The meta map propagated downstream contains:
- *   [id: srr_id, single_end: true/false]
+ * Downloads raw FASTQ files for an SRA accession. Uses EBI's ENA mirror
+ * which provides direct FASTQ downloads via HTTP (no SRA toolkit needed).
+ * Falls back to NCBI SRA toolkit if ENA doesn't have the accession.
  *
  * Author: Corey Howe
  * =============================================================================
  */
 
 process SRA_DOWNLOAD {
-    /*
-     * tag: Human-readable label shown in Nextflow's console output and reports.
-     * Using the SRR accession makes it easy to identify which download is running.
-     */
     tag "${srr_id}"
 
-    /*
-     * container: The Docker image to use for this process.
-     * ncbi/sra-tools is the official NCBI SRA Toolkit image.
-     * All tools (prefetch, fasterq-dump, vdb-dump) are included.
-     */
-    container 'quay.io/biocontainers/sra-tools:3.4.1--h4304569_1'
+    // Use a general-purpose container with curl, wget, and pigz
+    container 'ubuntu:22.04'
 
-    /*
-     * Resource directives:
-     *   cpus 4: fasterq-dump uses multiple threads for extraction
-     *   memory '4 GB': SRA downloads are not memory-intensive
-     *   time '2h': Large datasets can take a while to download
-     */
     cpus 4
-    memory '4 GB'
+    memory '8 GB'
     time '2h'
-
-    /*
-     * Error handling:
-     *   errorStrategy 'retry': Automatically retry on failure
-     *   maxRetries 3: Network downloads are flaky — retry up to 3 times
-     *
-     * prefetch is resumable, so retries pick up where they left off
-     * rather than restarting the entire download.
-     */
     errorStrategy 'retry'
     maxRetries 3
 
-    /*
-     * publishDir: Copy key outputs to the results directory.
-     * mode: 'copy' ensures files persist even if the work directory is cleaned.
-     */
     publishDir "${params.outdir}/${params.run_id}/sra", mode: 'copy', pattern: 'sra_metadata.json'
 
     input:
-    val(srr_id)     // SRA accession string, e.g., "SRR12345678"
+    val(srr_id)
 
     output:
-    tuple val(meta), path("*.fastq.gz"), emit: reads        // FASTQ files with meta map
-    path("sra_metadata.json"),           emit: metadata      // SRA run metadata
-    path("versions.yml"),                emit: versions       // Tool versions for reproducibility
+    tuple val(meta), path("*.fastq.gz"), emit: reads
+    path("sra_metadata.json"),           emit: metadata
+    path("versions.yml"),                emit: versions
 
     script:
-    /*
-     * We construct the meta map AFTER the script runs, because we need
-     * to detect whether the data is paired-end or single-end based on
-     * the output files from fasterq-dump.
-     *
-     * The meta map follows nf-core conventions: [id: sample_name, single_end: bool]
-     */
-    meta = [id: srr_id, single_end: false]  // Default to paired-end; updated below
+    meta = [id: srr_id, single_end: false]
     """
     #!/bin/bash
     set -euo pipefail
 
-    # Use /tmp as scratch space — on GCP the working directory is a GCS FUSE
-    # mount which causes SRA tools to segfault.
-    WORKDIR="\$(pwd)"
-    SCRATCH="/tmp/sra_scratch_${srr_id}"
-    mkdir -p "\$SCRATCH"
+    # Install curl if not available (ubuntu:22.04 base)
+    apt-get update -qq && apt-get install -y -qq curl pigz >/dev/null 2>&1 || true
 
-    echo "=== Step 1: Download FASTQ from SRA ==="
-    # Use fasterq-dump directly (skips prefetch which segfaults on GCP).
-    # fasterq-dump can download directly from NCBI without a .sra intermediate.
-    # --outdir and --temp use local scratch to avoid FUSE issues.
-    fasterq-dump ${srr_id} \\
-        --outdir "\$SCRATCH" \\
-        --temp "\$SCRATCH" \\
-        --split-3 \\
-        --threads ${task.cpus} \\
-        --skip-technical
+    echo "=== Downloading FASTQ for ${srr_id} ==="
 
-    echo "=== Step 2: Compress FASTQ files ==="
-    if command -v pigz >/dev/null 2>&1; then
-        pigz -p ${task.cpus} "\$SCRATCH"/*.fastq
+    # Strategy: Download from EBI's European Nucleotide Archive (ENA).
+    # ENA provides direct FASTQ downloads via HTTP — no SRA toolkit needed.
+    # This avoids the prefetch/fasterq-dump segfault issues on GCP.
+    #
+    # ENA URL pattern:
+    #   https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR543/006/SRR5437876/SRR5437876_1.fastq.gz
+    #   The subdirectory uses the first 6 chars of the accession + zero-padded last digit
+
+    # Build the ENA FTP path
+    PREFIX="\${1:0:6}"
+    SRR_PREFIX="${srr_id}"
+    SRR6="\${SRR_PREFIX:0:6}"
+    LAST_DIGITS="\${SRR_PREFIX:6}"
+
+    # Determine the zero-padded subdirectory
+    if [ \${#SRR_PREFIX} -gt 9 ]; then
+        SUBDIR="\${SRR_PREFIX:0:6}/0\${SRR_PREFIX:9}"
+    elif [ \${#SRR_PREFIX} -eq 10 ]; then
+        SUBDIR="\${SRR_PREFIX:0:6}/0\${SRR_PREFIX:9}"
     else
-        gzip "\$SCRATCH"/*.fastq
+        SUBDIR="\${SRR_PREFIX:0:6}"
     fi
 
-    # Copy compressed FASTQs back to the Nextflow working directory
-    cp "\$SCRATCH"/*.fastq.gz "\$WORKDIR/"
-    rm -rf "\$SCRATCH"
+    ENA_BASE="https://ftp.sra.ebi.ac.uk/vol1/fastq/\${SUBDIR}/${srr_id}"
 
-    echo "=== Step 4: Detect paired/single-end layout ==="
-    # fasterq-dump --split-3 creates:
-    #   Paired-end: ${srr_id}_1.fastq.gz + ${srr_id}_2.fastq.gz
-    #   Single-end: ${srr_id}.fastq.gz only
+    echo "  Trying ENA: \${ENA_BASE}"
+
+    # Try paired-end first
+    PAIRED=false
+    if curl -sfI "\${ENA_BASE}/${srr_id}_1.fastq.gz" >/dev/null 2>&1; then
+        echo "  Downloading paired-end FASTQ from ENA..."
+        curl -sL "\${ENA_BASE}/${srr_id}_1.fastq.gz" -o "${srr_id}_1.fastq.gz" &
+        curl -sL "\${ENA_BASE}/${srr_id}_2.fastq.gz" -o "${srr_id}_2.fastq.gz" &
+        wait
+        PAIRED=true
+        echo "  Downloaded paired-end reads"
+    elif curl -sfI "\${ENA_BASE}/${srr_id}.fastq.gz" >/dev/null 2>&1; then
+        echo "  Downloading single-end FASTQ from ENA..."
+        curl -sL "\${ENA_BASE}/${srr_id}.fastq.gz" -o "${srr_id}.fastq.gz"
+        echo "  Downloaded single-end reads"
+    else
+        echo "  ENA download not available. Trying NCBI fasterq-dump..."
+        # Fallback: use fasterq-dump if available in the container
+        if command -v fasterq-dump >/dev/null 2>&1; then
+            SCRATCH="/tmp/sra_scratch_${srr_id}"
+            mkdir -p "\$SCRATCH"
+            fasterq-dump ${srr_id} \\
+                --outdir "\$SCRATCH" \\
+                --temp "\$SCRATCH" \\
+                --split-3 \\
+                --threads ${task.cpus} \\
+                --skip-technical
+            if command -v pigz >/dev/null 2>&1; then
+                pigz -p ${task.cpus} "\$SCRATCH"/*.fastq
+            else
+                gzip "\$SCRATCH"/*.fastq
+            fi
+            cp "\$SCRATCH"/*.fastq.gz .
+            rm -rf "\$SCRATCH"
+        else
+            echo "ERROR: Cannot download ${srr_id} — neither ENA nor SRA tools available"
+            exit 1
+        fi
+    fi
+
+    echo "=== Detecting layout ==="
     if [ -f "${srr_id}_1.fastq.gz" ] && [ -f "${srr_id}_2.fastq.gz" ]; then
         LAYOUT="PAIRED"
-        echo "Detected PAIRED-end data"
+        echo "  PAIRED-end data"
     else
         LAYOUT="SINGLE"
-        echo "Detected SINGLE-end data"
+        echo "  SINGLE-end data"
     fi
 
-    echo "=== Step 5: Extract SRA metadata ==="
-    # Count reads in the FASTQ files for accurate metrics.
+    echo "=== Counting reads ==="
     READ_COUNT=\$(zcat *.fastq.gz | wc -l | awk '{print int(\$1/4)}')
     BASE_COUNT=\$(zcat *.fastq.gz | awk 'NR%4==2{sum+=length(\$0)}END{print sum}')
 
-    # Query NCBI for organism and study metadata via E-utilities.
-    # Falls back to "Unknown" if NCBI is unreachable.
+    echo "=== Fetching metadata from NCBI ==="
     ORGANISM="Unknown"
     STUDY_TITLE="SRA Run ${srr_id}"
     PLATFORM="ILLUMINA"
 
-    if command -v curl >/dev/null 2>&1; then
-        # Fetch run metadata from NCBI SRA via efetch
-        SRA_XML=\$(curl -sf "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=sra&id=${srr_id}&rettype=xml" 2>/dev/null || echo "")
-        if [ -n "\$SRA_XML" ]; then
-            # Extract metadata using sed (avoids grep -P which Nextflow can't parse)
-            ORGANISM=\$(echo "\$SRA_XML" | sed -n 's/.*<ScientificName>\\([^<]*\\)<.*/\\1/p' | head -1)
-            STUDY_TITLE=\$(echo "\$SRA_XML" | sed -n 's/.*<STUDY_TITLE>\\([^<]*\\)<.*/\\1/p' | head -1)
-            PLATFORM=\$(echo "\$SRA_XML" | sed -n 's/.*<INSTRUMENT_MODEL>\\([^<]*\\)<.*/\\1/p' | head -1)
-            [ -z "\$ORGANISM" ] && ORGANISM="Unknown"
-            [ -z "\$STUDY_TITLE" ] && STUDY_TITLE="SRA Run ${srr_id}"
-            [ -z "\$PLATFORM" ] && PLATFORM="ILLUMINA"
-            echo "  Organism: \$ORGANISM"
-            echo "  Study: \$STUDY_TITLE"
-        else
-            echo "  NCBI unreachable — using defaults"
-        fi
+    SRA_XML=\$(curl -sf "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=sra&id=${srr_id}&rettype=xml" 2>/dev/null || echo "")
+    if [ -n "\$SRA_XML" ]; then
+        ORGANISM=\$(echo "\$SRA_XML" | sed -n 's/.*<ScientificName>\\([^<]*\\)<.*/\\1/p' | head -1)
+        STUDY_TITLE=\$(echo "\$SRA_XML" | sed -n 's/.*<STUDY_TITLE>\\([^<]*\\)<.*/\\1/p' | head -1)
+        PLATFORM=\$(echo "\$SRA_XML" | sed -n 's/.*<INSTRUMENT_MODEL>\\([^<]*\\)<.*/\\1/p' | head -1)
+        [ -z "\$ORGANISM" ] && ORGANISM="Unknown"
+        [ -z "\$STUDY_TITLE" ] && STUDY_TITLE="SRA Run ${srr_id}"
+        [ -z "\$PLATFORM" ] && PLATFORM="ILLUMINA"
     fi
 
     cat > sra_metadata.json <<METADATA
@@ -163,17 +149,13 @@ process SRA_DOWNLOAD {
     }
 METADATA
 
-    echo "=== Step 6: Cleanup SRA cache ==="
-    # Remove the .sra cache file to save disk space.
-    rm -rf ${srr_id}/${srr_id}.sra 2>/dev/null || true
-    rm -rf ${srr_id} 2>/dev/null || true
-
-    echo "=== Step 7: Record tool versions ==="
     cat <<-VERSIONS > versions.yml
     "${task.process}":
-        sra-tools: \$(prefetch --version 2>&1 | head -n1 | awk '{print \$NF}')
+        curl: \$(curl --version 2>&1 | head -1 | awk '{print \$2}')
     VERSIONS
 
-    echo "SRA download complete for ${srr_id}"
+    echo "=== Download complete for ${srr_id} ==="
+    echo "  Reads: \$READ_COUNT | Bases: \$BASE_COUNT | Layout: \$LAYOUT"
+    echo "  Organism: \$ORGANISM"
     """
 }

@@ -122,11 +122,10 @@ process PROSTT5_PREDICT {
                     f.write(pred[i:i+60] + "\\n")
 
     # Write placeholder embeddings metadata (h5py not required)
+    success = len(pred_map)
     import json
     with open("prostt5_embeddings.json", "w") as f:
         json.dump({"model": model_name, "num_proteins": len(proteins), "predicted": success}, f)
-
-    success = len(pred_map)
     print(f"Predicted 3Di for {success}/{len(proteins)} proteins", file=sys.stderr)
 
     # Write versions

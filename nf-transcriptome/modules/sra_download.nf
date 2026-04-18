@@ -82,32 +82,38 @@ process SRA_DOWNLOAD {
     #!/bin/bash
     set -euo pipefail
 
+    # Use /tmp as scratch space for SRA downloads.
+    # On GCP, the working directory is a GCS FUSE mount — SRA tools (prefetch)
+    # segfault when writing large files to FUSE.  /tmp is a real local disk.
+    WORKDIR="\$(pwd)"
+    SCRATCH="/tmp/sra_scratch_${srr_id}"
+    mkdir -p "\$SCRATCH"
+
     echo "=== Step 1: Prefetch SRA accession ${srr_id} ==="
-    # prefetch downloads the .sra file to a local cache.
-    # --max-size prevents accidentally downloading terabyte-scale datasets.
-    # prefetch is resumable: if interrupted, a retry picks up where it left off.
-    prefetch ${srr_id} --max-size ${params.max_sra_size} --progress
+    prefetch ${srr_id} \\
+        --max-size ${params.max_sra_size} \\
+        --output-directory "\$SCRATCH" \\
+        --progress
 
     echo "=== Step 2: Convert .sra to FASTQ ==="
-    # fasterq-dump extracts FASTQ from the .sra file.
-    # --split-3: produces _1.fastq and _2.fastq for paired-end,
-    #            or a single .fastq for single-end data.
-    # --skip-technical: skips technical reads (barcodes, adapters)
-    # --print-read-nr: shows progress during extraction
-    fasterq-dump ${srr_id} \\
+    fasterq-dump "\$SCRATCH/${srr_id}/${srr_id}.sra" \\
+        --outdir "\$SCRATCH" \\
+        --temp "\$SCRATCH" \\
         --split-3 \\
         --threads ${task.cpus} \\
         --skip-technical \\
         --print-read-nr
 
     echo "=== Step 3: Compress FASTQ files ==="
-    # fasterq-dump outputs uncompressed FASTQ.
-    # Use pigz (parallel gzip) if available, otherwise fall back to gzip.
     if command -v pigz >/dev/null 2>&1; then
-        pigz -p ${task.cpus} *.fastq
+        pigz -p ${task.cpus} "\$SCRATCH"/*.fastq
     else
-        gzip *.fastq
+        gzip "\$SCRATCH"/*.fastq
     fi
+
+    # Copy compressed FASTQs back to the Nextflow working directory
+    cp "\$SCRATCH"/*.fastq.gz "\$WORKDIR/"
+    rm -rf "\$SCRATCH"
 
     echo "=== Step 4: Detect paired/single-end layout ==="
     # fasterq-dump --split-3 creates:

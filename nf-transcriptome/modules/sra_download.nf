@@ -32,7 +32,7 @@ process SRA_DOWNLOAD {
      * ncbi/sra-tools is the official NCBI SRA Toolkit image.
      * All tools (prefetch, fasterq-dump, vdb-dump) are included.
      */
-    container 'ncbi/sra-tools:3.4.1'
+    container 'quay.io/biocontainers/sra-tools:3.4.1--h4304569_1'
 
     /*
      * Resource directives:
@@ -79,8 +79,8 @@ process SRA_DOWNLOAD {
      */
     meta = [id: srr_id, single_end: false]  // Default to paired-end; updated below
     """
-    #!/bin/sh
-    set -eu
+    #!/bin/bash
+    set -euo pipefail
 
     echo "=== Step 1: Prefetch SRA accession ${srr_id} ==="
     # prefetch downloads the .sra file to a local cache.

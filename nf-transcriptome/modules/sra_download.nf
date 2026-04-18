@@ -32,7 +32,7 @@ process SRA_DOWNLOAD {
      * ncbi/sra-tools is the official NCBI SRA Toolkit image.
      * All tools (prefetch, fasterq-dump, vdb-dump) are included.
      */
-    container 'ncbi/sra-tools:3.1.1'
+    container 'ncbi/sra-tools:3.4.1'
 
     /*
      * Resource directives:

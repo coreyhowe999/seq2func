@@ -82,29 +82,26 @@ process SRA_DOWNLOAD {
     #!/bin/bash
     set -euo pipefail
 
-    # Use /tmp as scratch space for SRA downloads.
-    # On GCP, the working directory is a GCS FUSE mount — SRA tools (prefetch)
-    # segfault when writing large files to FUSE.  /tmp is a real local disk.
+    # Use /tmp as scratch space — on GCP the working directory is a GCS FUSE
+    # mount which causes SRA tools to segfault.
     WORKDIR="\$(pwd)"
     SCRATCH="/tmp/sra_scratch_${srr_id}"
     mkdir -p "\$SCRATCH"
 
-    echo "=== Step 1: Prefetch SRA accession ${srr_id} ==="
-    prefetch ${srr_id} \\
-        --max-size ${params.max_sra_size} \\
-        --output-directory "\$SCRATCH" \\
-        --progress
-
-    echo "=== Step 2: Convert .sra to FASTQ ==="
-    fasterq-dump "\$SCRATCH/${srr_id}/${srr_id}.sra" \\
+    echo "=== Step 1: Download FASTQ from SRA ==="
+    # Use fasterq-dump directly (skips prefetch which segfaults on GCP).
+    # fasterq-dump can download directly from NCBI without a .sra intermediate.
+    # --outdir and --temp use local scratch to avoid FUSE issues.
+    fasterq-dump ${srr_id} \\
         --outdir "\$SCRATCH" \\
         --temp "\$SCRATCH" \\
         --split-3 \\
         --threads ${task.cpus} \\
         --skip-technical \\
-        --print-read-nr
+        --print-read-nr \\
+        --progress
 
-    echo "=== Step 3: Compress FASTQ files ==="
+    echo "=== Step 2: Compress FASTQ files ==="
     if command -v pigz >/dev/null 2>&1; then
         pigz -p ${task.cpus} "\$SCRATCH"/*.fastq
     else

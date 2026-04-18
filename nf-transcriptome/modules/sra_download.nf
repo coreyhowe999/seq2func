@@ -79,8 +79,8 @@ process SRA_DOWNLOAD {
      */
     meta = [id: srr_id, single_end: false]  // Default to paired-end; updated below
     """
-    #!/bin/bash
-    set -euo pipefail
+    #!/bin/sh
+    set -eu
 
     echo "=== Step 1: Prefetch SRA accession ${srr_id} ==="
     # prefetch downloads the .sra file to a local cache.
@@ -103,7 +103,7 @@ process SRA_DOWNLOAD {
     echo "=== Step 3: Compress FASTQ files ==="
     # fasterq-dump outputs uncompressed FASTQ.
     # Use pigz (parallel gzip) if available, otherwise fall back to gzip.
-    if command -v pigz &> /dev/null; then
+    if command -v pigz >/dev/null 2>&1; then
         pigz -p ${task.cpus} *.fastq
     else
         gzip *.fastq
@@ -132,7 +132,7 @@ process SRA_DOWNLOAD {
     STUDY_TITLE="SRA Run ${srr_id}"
     PLATFORM="ILLUMINA"
 
-    if command -v curl &> /dev/null; then
+    if command -v curl >/dev/null 2>&1; then
         # Fetch run metadata from NCBI SRA via efetch
         SRA_XML=\$(curl -sf "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=sra&id=${srr_id}&rettype=xml" 2>/dev/null || echo "")
         if [ -n "\$SRA_XML" ]; then

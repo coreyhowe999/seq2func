@@ -373,9 +373,13 @@ workflow {
         CDD_SEARCH.out.annotations.subscribe { sendStatusUpdate('CDD_SEARCH', 'completed') }
     } else {
         // When CDD is skipped, create a placeholder channel with the same
-        // tuple structure: [meta, file].  The merge script handles "NO_CDD" by name.
+        // tuple structure: [meta, file].  We write an actual empty file so
+        // Nextflow can stage it to GCS (file('NO_CDD') doesn't exist on disk
+        // and causes "Can't stage file" errors on cloud executors).
         ch_cdd = TRANSDECODER_PREDICT.out.proteins.map { meta, prot ->
-            [meta, file('NO_CDD')]
+            def placeholder = workDir.resolve('NO_CDD')
+            if (!placeholder.exists()) placeholder.text = '{}'
+            [meta, placeholder]
         }
     }
 
@@ -386,9 +390,10 @@ workflow {
         ch_prostt5_3di = PROSTT5_PREDICT.out.structures_3di
         PROSTT5_PREDICT.out.structures_3di.subscribe { sendStatusUpdate('PROSTT5_PREDICT', 'completed') }
     } else {
-        // When ProstT5 is skipped, create a matching placeholder tuple channel
         ch_prostt5_3di = TRANSDECODER_PREDICT.out.proteins.map { meta, prot ->
-            [meta, file('NO_PROSTT5')]
+            def placeholder = workDir.resolve('NO_PROSTT5')
+            if (!placeholder.exists()) placeholder.text = ''
+            [meta, placeholder]
         }
     }
 
@@ -403,9 +408,10 @@ workflow {
         ch_foldseek = FOLDSEEK_SEARCH.out.annotations
         FOLDSEEK_SEARCH.out.annotations.subscribe { sendStatusUpdate('FOLDSEEK_SEARCH', 'completed') }
     } else {
-        // When FoldSeek is skipped, create a matching placeholder tuple channel
         ch_foldseek = TRANSDECODER_PREDICT.out.proteins.map { meta, prot ->
-            [meta, file('NO_FOLDSEEK')]
+            def placeholder = workDir.resolve('NO_FOLDSEEK')
+            if (!placeholder.exists()) placeholder.text = '{}'
+            [meta, placeholder]
         }
     }
 

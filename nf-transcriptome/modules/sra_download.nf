@@ -53,18 +53,19 @@ process SRA_DOWNLOAD {
     #   The subdirectory uses the first 6 chars of the accession + zero-padded last digit
 
     # Build the ENA FTP path
-    PREFIX="\${1:0:6}"
-    SRR_PREFIX="${srr_id}"
-    SRR6="\${SRR_PREFIX:0:6}"
-    LAST_DIGITS="\${SRR_PREFIX:6}"
+    # SRR5437876 → SRR543/006/SRR5437876 (first 6 chars / zero-padded remainder)
+    SRR="${srr_id}"
+    SRR6="\${SRR:0:6}"
+    LEN=\${#SRR}
 
-    # Determine the zero-padded subdirectory
-    if [ \${#SRR_PREFIX} -gt 9 ]; then
-        SUBDIR="\${SRR_PREFIX:0:6}/0\${SRR_PREFIX:9}"
-    elif [ \${#SRR_PREFIX} -eq 10 ]; then
-        SUBDIR="\${SRR_PREFIX:0:6}/0\${SRR_PREFIX:9}"
+    if [ "\$LEN" -gt 9 ]; then
+        SUBDIR="\${SRR6}/0\${SRR:9}"
+    elif [ "\$LEN" -eq 10 ]; then
+        SUBDIR="\${SRR6}/0\${SRR:9}"
+    elif [ "\$LEN" -eq 9 ]; then
+        SUBDIR="\${SRR6}"
     else
-        SUBDIR="\${SRR_PREFIX:0:6}"
+        SUBDIR="\${SRR6}"
     fi
 
     ENA_BASE="https://ftp.sra.ebi.ac.uk/vol1/fastq/\${SUBDIR}/${srr_id}"

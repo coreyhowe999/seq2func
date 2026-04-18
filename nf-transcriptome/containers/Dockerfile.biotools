@@ -1,0 +1,63 @@
+# =============================================================================
+# Dockerfile.biotools — TransDecoder + BLAST+ + rpsbproc + Python utilities
+# =============================================================================
+#
+# This container bundles the bioinformatics tools needed for:
+#   - ORF prediction (TransDecoder)
+#   - Domain annotation (RPS-BLAST + rpsbproc)
+#   - Result merging (Python scripts)
+#
+# Used by: TRANSDECODER_LONGORFS, TRANSDECODER_PREDICT, MERGE_RESULTS
+#
+# Build:
+#   docker build -t nf-transcriptome-biotools:latest -f Dockerfile.biotools .
+# =============================================================================
+
+FROM python:3.11-slim
+
+LABEL maintainer="Corey Howe"
+LABEL description="Bioinformatics tools for transcriptome annotation pipeline"
+LABEL version="1.0.0"
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    curl \
+    perl \
+    cpanminus \
+    build-essential \
+    hmmer \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install TransDecoder
+ENV TRANSDECODER_VERSION=5.7.1
+RUN wget -q https://github.com/TransDecoder/TransDecoder/archive/refs/tags/TransDecoder-v${TRANSDECODER_VERSION}.tar.gz \
+    && tar xzf TransDecoder-v${TRANSDECODER_VERSION}.tar.gz \
+    && mv TransDecoder-TransDecoder-v${TRANSDECODER_VERSION} /opt/transdecoder \
+    && rm TransDecoder-v${TRANSDECODER_VERSION}.tar.gz \
+    && ln -s /opt/transdecoder/TransDecoder.LongOrfs /usr/local/bin/TransDecoder.LongOrfs \
+    && ln -s /opt/transdecoder/TransDecoder.Predict /usr/local/bin/TransDecoder.Predict
+
+# Install BLAST+ (for rpsbproc if needed — CDD_SEARCH uses ncbi/blast image directly)
+RUN wget -q https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/2.15.0/ncbi-blast-2.15.0+-x64-linux.tar.gz \
+    && tar xzf ncbi-blast-2.15.0+-x64-linux.tar.gz \
+    && cp ncbi-blast-2.15.0+/bin/* /usr/local/bin/ \
+    && rm -rf ncbi-blast-2.15.0+* \
+    || echo "BLAST+ install skipped (will use ncbi/blast container)"
+
+# Install Python dependencies (no heavy ML libs here — ProstT5 has its own container)
+RUN pip install --no-cache-dir \
+    biopython==1.83
+
+# Copy bin scripts
+COPY bin/ /usr/local/bin/
+RUN chmod +x /usr/local/bin/*.py
+
+# Security: non-root user
+RUN groupadd -r pipeline && useradd -r -g pipeline -d /home/pipeline -s /bin/bash pipeline
+RUN mkdir -p /home/pipeline && chown -R pipeline:pipeline /home/pipeline
+
+USER pipeline
+WORKDIR /home/pipeline
+
+CMD ["python3", "--version"]

@@ -1,0 +1,35 @@
+# =============================================================================
+# Docker Compose — Full-stack local development
+# =============================================================================
+#
+# Runs the web app and pipeline together for end-to-end testing.
+#
+# Usage:
+#   docker compose up          # Start web app
+#   docker compose up --build  # Rebuild and start
+#
+# The pipeline itself runs via Nextflow (not Docker Compose) but the web app
+# can be developed and tested with this compose file.
+# =============================================================================
+
+services:
+  # ── Web Application ──────────────────────────────────────────────────────
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - USE_MOCK_DATA=true
+      - LOCAL_DB_PATH=/app/data/local.db
+      - PIPELINE_DIR=/pipeline
+      - NODE_ENV=development
+    volumes:
+      - ./web/src:/app/src          # Hot reload for development
+      - ./nf-transcriptome:/pipeline:ro
+      - web-data:/app/data
+    depends_on: []
+
+volumes:
+  web-data:

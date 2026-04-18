@@ -1,0 +1,50 @@
+# =============================================================================
+# Cloudflare Wrangler Configuration — seq2func.win
+# =============================================================================
+#
+# Deploys the Next.js web app to Cloudflare Pages with:
+#   - D1 database for structured data (runs, proteins, annotations)
+#   - R2 bucket for file storage (logs, pipeline outputs)
+#   - Custom domain: seq2func.win
+#
+# Setup:
+#   1. npx wrangler d1 create nf-transcriptome-db
+#   2. npx wrangler r2 bucket create nf-transcriptome
+#   3. npx wrangler d1 execute nf-transcriptome-db --file=./migrations/0001_initial.sql
+#   4. npx wrangler pages deploy
+#
+# =============================================================================
+
+name = "seq2func"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# ── Pages Configuration ─────────────────────────────────────────────────────
+pages_build_output_dir = ".vercel/output/static"
+
+# ── D1 Database Binding ─────────────────────────────────────────────────────
+# Create with: npx wrangler d1 create nf-transcriptome-db
+# Then paste the database_id here
+[[d1_databases]]
+binding = "DB"
+database_name = "nf-transcriptome-db"
+database_id = "bd9f88ec-178e-4e9b-b566-84d8e79ce8c1"
+
+# ── R2 Bucket Binding ──────────────────────────────────────────────────────
+# Create with: npx wrangler r2 bucket create nf-transcriptome
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "nf-transcriptome"
+
+# ── Environment Variables ───────────────────────────────────────────────────
+[vars]
+ENVIRONMENT = "production"
+USE_MOCK_DATA = "false"
+
+# ── Custom Domain ───────────────────────────────────────────────────────────
+# After first deploy, add custom domain via Cloudflare dashboard:
+#   Pages > seq2func > Custom domains > Add > seq2func.win
+#
+# DNS should be configured on the seq2func.win zone:
+#   CNAME  @  seq2func.pages.dev  (proxied)
+#   CNAME  www  seq2func.pages.dev  (proxied)

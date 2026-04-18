@@ -1,0 +1,11 @@
+{
+  "total_lead_snps": 5,
+  "p_threshold": 5e-08,
+  "clumping_window_kb": 10000,
+  "per_chromosome": [
+    {
+      "CHR": 1,
+      "n_loci": 5
+    }
+  ]
+}

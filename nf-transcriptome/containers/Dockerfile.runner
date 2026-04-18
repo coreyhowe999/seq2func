@@ -1,0 +1,12 @@
+# Custom Nextflow runner image with a modern Docker CLI
+# Fixes the API version mismatch when running Docker-in-Docker
+FROM nextflow/nextflow:25.10.4
+
+USER root
+
+# Copy pre-downloaded modern Docker CLI binary
+COPY docker-cli /usr/bin/docker
+RUN chmod +x /usr/bin/docker
+
+# Verify
+RUN /usr/bin/docker --version

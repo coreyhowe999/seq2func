@@ -1,0 +1,15 @@
+{
+  "input_variants": 50000,
+  "filters": {
+    "maf_removed": 0,
+    "info_removed": 21906,
+    "palindromic_removed": 9430,
+    "extreme_beta_removed": 0,
+    "low_n_removed": 0,
+    "duplicates_removed": 0
+  },
+  "output_variants": 18664,
+  "total_removed": 31336,
+  "significant_hits_5e8": 0,
+  "lambda_gc": 1.0133
+}

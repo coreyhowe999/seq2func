@@ -1,0 +1,69 @@
+# =============================================================================
+# Dockerfile.prostt5 — ProstT5 protein language model inference
+# =============================================================================
+#
+# This container provides the ProstT5 model for predicting 3Di structural
+# alphabet tokens from amino acid sequences.
+#
+# GPU SUPPORT:
+#   Built on NVIDIA CUDA base image for GPU inference.
+#   Falls back to CPU automatically if no GPU is available.
+#
+# MODEL CACHING:
+#   The ProstT5 model (~2 GB) is downloaded at build time to avoid
+#   downloading it during every pipeline run.
+#
+# Build:
+#   docker build -t nf-transcriptome-prostt5:latest -f Dockerfile.prostt5 .
+#
+# Build for CPU-only:
+#   docker build --build-arg BASE_IMAGE=python:3.11-slim \
+#     -t nf-transcriptome-prostt5:cpu -f Dockerfile.prostt5 .
+# =============================================================================
+
+ARG BASE_IMAGE=nvidia/cuda:12.1.0-runtime-ubuntu22.04
+FROM ${BASE_IMAGE}
+
+LABEL maintainer="Corey Howe"
+LABEL description="ProstT5 structural alphabet prediction (GPU-capable)"
+LABEL version="1.0.0"
+
+# Set non-interactive frontend for apt
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Python and system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+# Install PyTorch (with CUDA support) and HuggingFace transformers
+RUN pip install --no-cache-dir \
+    torch==2.2.0 \
+    transformers==4.38.0 \
+    sentencepiece==0.2.0 \
+    protobuf==4.25.3 \
+    h5py==3.10.0 \
+    numpy==1.26.4
+
+# Pre-download ProstT5 model weights (avoids runtime download)
+RUN python3 -c "\
+from transformers import T5Tokenizer, AutoModelForSeq2SeqLM; \
+T5Tokenizer.from_pretrained('Rostlab/ProstT5', do_lower_case=False); \
+AutoModelForSeq2SeqLM.from_pretrained('Rostlab/ProstT5'); \
+print('ProstT5 model cached successfully')"
+
+# Copy bin scripts
+COPY bin/ /usr/local/bin/
+RUN chmod +x /usr/local/bin/*.py
+
+# Security: non-root user
+RUN groupadd -r pipeline && useradd -r -g pipeline -d /home/pipeline -s /bin/bash pipeline
+RUN mkdir -p /home/pipeline && chown -R pipeline:pipeline /home/pipeline
+
+USER pipeline
+WORKDIR /home/pipeline
+
+CMD ["python3", "--version"]

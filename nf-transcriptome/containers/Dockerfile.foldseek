@@ -1,0 +1,48 @@
+# =============================================================================
+# Dockerfile.foldseek — FoldSeek structural homology search
+# =============================================================================
+#
+# FoldSeek enables ultra-fast protein structure comparison using the 3Di
+# structural alphabet.  This container provides the foldseek binary and
+# the parse_foldseek.py results parser.
+#
+# NOTE: The FoldSeek database (PDB, AlphaFold DB, etc.) is NOT included
+# in this image — it must be mounted at runtime via Nextflow's path input.
+# Download databases with:
+#   foldseek databases PDB pdb tmp
+#   foldseek databases Alphafold/UniProt50 afdb tmp
+#
+# Build:
+#   docker build -t nf-transcriptome-foldseek:latest -f Dockerfile.foldseek .
+# =============================================================================
+
+FROM python:3.11-slim
+
+LABEL maintainer="Corey Howe"
+LABEL description="FoldSeek structural similarity search"
+LABEL version="1.0.0"
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install FoldSeek binary
+ENV FOLDSEEK_VERSION=9
+RUN wget -q https://mmseqs.com/foldseek/foldseek-linux-avx2.tar.gz \
+    && tar xzf foldseek-linux-avx2.tar.gz \
+    && cp foldseek/bin/foldseek /usr/local/bin/ \
+    && rm -rf foldseek foldseek-linux-avx2.tar.gz
+
+# Copy bin scripts
+COPY bin/ /usr/local/bin/
+RUN chmod +x /usr/local/bin/*.py
+
+# Security: non-root user
+RUN groupadd -r pipeline && useradd -r -g pipeline -d /home/pipeline -s /bin/bash pipeline
+RUN mkdir -p /home/pipeline && chown -R pipeline:pipeline /home/pipeline
+
+USER pipeline
+WORKDIR /home/pipeline
+
+CMD ["foldseek", "version"]

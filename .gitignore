@@ -1,0 +1,38 @@
+# Node
+web/node_modules/
+web/.next/
+web/data/
+
+# Nextflow
+nf-transcriptome/work/
+nf-transcriptome/.nextflow/
+nf-transcriptome/.nextflow.log*
+nf-transcriptome/results/
+nf-transcriptome/test_results/
+nf-transcriptome/data/cdd/
+nf-transcriptome/data/foldseek/
+nf-transcriptome/containers/docker-cli
+
+# Credentials (NEVER commit)
+*.json.key
+gcp-service-account-key.json
+web/.env.local
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Private files
+intro call.txt
+.claude/
+
+# Build artifacts
+nf-gwas-mr-pipeline/.pytest_cache/
+nf-gwas-mr-pipeline/test_run/
+nf-gwas-mr-pipeline/bin/__pycache__/
+nf-gwas-mr-pipeline/tests/__pycache__/
+
+# OS
+.DS_Store
+Thumbs.db

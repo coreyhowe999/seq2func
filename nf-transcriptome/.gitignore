@@ -1,0 +1,29 @@
+# Nextflow work directory
+work/
+.nextflow/
+.nextflow.log*
+
+# Results
+results/
+test_results/
+
+# Data
+data/cdd/
+data/foldseek/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Docker
+*.tar
+containers/docker-cli
+
+# GCP credentials (NEVER commit)
+gcp-service-account-key.json
+*.json.key
+
+# OS
+.DS_Store
+Thumbs.db

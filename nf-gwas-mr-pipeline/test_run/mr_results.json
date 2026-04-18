@@ -1,0 +1,56 @@
+{
+  "n_instruments": 5,
+  "results": [
+    {
+      "method": "wald_ratio",
+      "estimate": -0.08177472288774397,
+      "se": 0.12306276605753333,
+      "pvalue": 0.5063728713307343,
+      "ci_lower": -0.3229777443605093,
+      "ci_upper": 0.15942829858502133,
+      "n_instruments": 1,
+      "strongest_snp": "rs10024042"
+    },
+    {
+      "method": "ivw",
+      "estimate": 0.00487664333251837,
+      "se": 0.06739245919446693,
+      "pvalue": 0.9423139408102724,
+      "ci_lower": -0.1272125766886368,
+      "ci_upper": 0.13696586335367353,
+      "n_instruments": 5
+    },
+    {
+      "method": "mr_egger",
+      "estimate": -0.2220284141392271,
+      "se": 0.17708203163751343,
+      "pvalue": 0.20990862625085982,
+      "ci_lower": -0.5691091961487534,
+      "ci_upper": 0.1250523678702992,
+      "n_instruments": 5,
+      "intercept": 0.011480296419901065,
+      "intercept_se": 0.008649818296141958,
+      "intercept_pvalue": 0.18443268468201357
+    },
+    {
+      "method": "weighted_median",
+      "estimate": -0.007821796350570497,
+      "se": 0.09290648513917217,
+      "pvalue": 0.9329053742248353,
+      "ci_lower": -0.18991850722334797,
+      "ci_upper": 0.17427491452220695,
+      "n_instruments": 5
+    }
+  ],
+  "heterogeneity": {
+    "Q": 2.2333387341420825,
+    "Q_df": 4,
+    "Q_pvalue": 0.6929305044125746,
+    "I_squared": 0
+  },
+  "instrument_strength": {
+    "mean_F": 44.03595172685324,
+    "min_F": 35.34267861047898,
+    "n_weak_instruments": 0
+  }
+}

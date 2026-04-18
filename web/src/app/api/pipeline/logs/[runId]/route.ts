@@ -7,10 +7,10 @@ import { mockLogs } from "@/lib/mockData";
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { runId: string } }
+  { params }: { params: Promise<{ runId: string }> }
 ) {
   try {
-    const { runId } = params;
+    const { runId } = await params;
     const { searchParams } = new URL(request.url);
     const level = searchParams.get("level");       // filter by level (error, warn, info)
     const source = searchParams.get("source");     // filter by source (nextflow, step:TRINITY)

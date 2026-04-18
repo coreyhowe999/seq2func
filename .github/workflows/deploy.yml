@@ -1,4 +1,4 @@
-name: Deploy to Cloudflare Pages
+name: Deploy to Cloud Run
 
 on:
   push:
@@ -8,35 +8,50 @@ on:
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
+env:
+  PROJECT_ID: seq2func
+  REGION: us-central1
+  SERVICE_NAME: seq2func-web
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      deployments: write
+      id-token: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
         with:
-          node-version: '20'
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Install dependencies
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and Push Docker image
         working-directory: web
-        run: npm install --legacy-peer-deps
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/nf-transcriptome/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          docker build -t $IMAGE .
+          docker push $IMAGE
 
-      - name: Build with @cloudflare/next-on-pages
-        working-directory: web
-        run: npx @cloudflare/next-on-pages
-        env:
-          USE_MOCK_DATA: 'true'
-
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy web/.vercel/output/static --project-name=seq2func --branch=main
+      - name: Deploy to Cloud Run
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/nf-transcriptome/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image=$IMAGE \
+            --region=${{ env.REGION }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --port=8080 \
+            --memory=512Mi \
+            --min-instances=0 \
+            --max-instances=3 \
+            --set-env-vars="USE_MOCK_DATA=true"

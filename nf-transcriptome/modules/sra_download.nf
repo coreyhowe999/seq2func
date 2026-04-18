@@ -136,9 +136,10 @@ process SRA_DOWNLOAD {
         # Fetch run metadata from NCBI SRA via efetch
         SRA_XML=\$(curl -sf "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=sra&id=${srr_id}&rettype=xml" 2>/dev/null || echo "")
         if [ -n "\$SRA_XML" ]; then
-            ORGANISM=\$(echo "\$SRA_XML" | grep -oP 'ScientificName>\K[^<]+' | head -1 || echo "Unknown")
-            STUDY_TITLE=\$(echo "\$SRA_XML" | grep -oP 'STUDY_TITLE>\K[^<]+' | head -1 || echo "SRA Run ${srr_id}")
-            PLATFORM=\$(echo "\$SRA_XML" | grep -oP 'INSTRUMENT_MODEL>\K[^<]+' | head -1 || echo "ILLUMINA")
+            # Extract metadata using sed (avoids grep -P which Nextflow can't parse)
+            ORGANISM=\$(echo "\$SRA_XML" | sed -n 's/.*<ScientificName>\\([^<]*\\)<.*/\\1/p' | head -1)
+            STUDY_TITLE=\$(echo "\$SRA_XML" | sed -n 's/.*<STUDY_TITLE>\\([^<]*\\)<.*/\\1/p' | head -1)
+            PLATFORM=\$(echo "\$SRA_XML" | sed -n 's/.*<INSTRUMENT_MODEL>\\([^<]*\\)<.*/\\1/p' | head -1)
             [ -z "\$ORGANISM" ] && ORGANISM="Unknown"
             [ -z "\$STUDY_TITLE" ] && STUDY_TITLE="SRA Run ${srr_id}"
             [ -z "\$PLATFORM" ] && PLATFORM="ILLUMINA"

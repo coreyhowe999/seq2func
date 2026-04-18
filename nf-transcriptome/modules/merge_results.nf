@@ -18,8 +18,8 @@ process MERGE_RESULTS {
     input:
     tuple val(meta), path(proteins)
     tuple val(meta2), path(cdd_json)
-    path(prostt5_3di)
-    path(foldseek_json)
+    tuple val(meta3), path(prostt5_3di)
+    tuple val(meta4), path(foldseek_json)
 
     output:
     tuple val(meta), path("annotations.json"),   emit: annotations

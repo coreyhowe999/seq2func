@@ -1,27 +1,14 @@
 /*
  * =============================================================================
- * CDD Search Module — Conserved Domain Annotation
+ * CDD Search Module — Conserved Domain Annotation via RPS-BLAST
  * =============================================================================
  *
- * This module identifies conserved protein domains using the NCBI Conserved
- * Domain Database (CDD) via RPS-BLAST (Reverse Position-Specific BLAST).
+ * Identifies conserved protein domains using the NCBI Conserved Domain
+ * Database (CDD) via RPS-BLAST (Reverse Position-Specific BLAST).
  *
- * How RPS-BLAST differs from standard BLAST:
- *   - Standard BLAST: Query sequence vs. sequence database
- *   - RPS-BLAST: Query sequence vs. position-specific scoring matrix (PSSM)
- *     database.  Each PSSM represents a conserved domain family.
- *
- * The CDD contains domain models from:
- *   - Pfam (protein families)
- *   - SMART (signaling and extracellular domains)
- *   - COG/KOG (clusters of orthologous groups)
- *   - cd (NCBI-curated domain models)
- *   - TIGRFAM (microbial protein families)
- *
- * After RPS-BLAST, rpsbproc post-processes the results to add:
- *   - Domain architecture (multi-domain arrangements)
- *   - Functional sites (catalytic residues, binding sites)
- *   - Superfamily classification
+ * RPS-BLAST searches query sequences against position-specific scoring
+ * matrices (PSSMs), each representing a conserved domain family from
+ * Pfam, SMART, COG, TIGRFAM, and NCBI-curated models.
  *
  * Author: Corey Howe
  * =============================================================================
@@ -29,19 +16,19 @@
 
 process CDD_SEARCH {
     tag "${meta.id}"
-    container 'ncbi/blast:2.15.0'     // Official NCBI BLAST+ image (includes rpsblast)
+    container 'ncbi/blast:2.15.0'
     cpus 4
     memory '8 GB'
 
     publishDir "${params.outdir}/${params.run_id}/cdd", mode: 'copy'
 
     input:
-    tuple val(meta), path(proteins)     // Predicted protein FASTA from TransDecoder
-    path(cdd_db)                        // CDD database directory
+    tuple val(meta), path(proteins)
+    path(cdd_db)
 
     output:
-    tuple val(meta), path("cdd_results.json"),  emit: annotations    // Parsed domain annotations (JSON)
-    tuple val(meta), path("rpsblast_raw.out"),  emit: raw_output     // Raw RPS-BLAST output
+    tuple val(meta), path("cdd_results.json"),  emit: annotations
+    tuple val(meta), path("rpsblast_raw.out"),  emit: raw_output
     path("versions.yml"),                       emit: versions
 
     script:
@@ -49,32 +36,60 @@ process CDD_SEARCH {
     #!/bin/bash
     set -euo pipefail
 
-    # Step 1: Run RPS-BLAST against the CDD.
-    #
-    # -query: protein sequences to search
-    # -db: path to the CDD PSSM database
-    # -out: raw output file
-    # -evalue: E-value threshold (lower = more stringent)
-    # -outfmt 11: ASN.1 archive format (required for rpsbproc post-processing)
-    # -num_threads: parallel search threads
-    #
-    # outfmt 11 (ASN.1 archive) is special: it stores the full alignment data
-    # needed by rpsbproc.  Other formats lose information needed for site
-    # annotation and domain architecture analysis.
-    rpsblast \\
-        -query ${proteins} \\
-        -db ${cdd_db} \\
-        -out rpsblast_raw.out \\
-        -evalue ${params.evalue} \\
-        -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle" \\
-        -num_threads ${task.cpus} \\
+    # Run RPS-BLAST against CDD
+    rpsblast \
+        -query ${proteins} \
+        -db ${cdd_db} \
+        -out rpsblast_raw.out \
+        -evalue ${params.evalue} \
+        -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle" \
+        -num_threads ${task.cpus} \
         || true  # Don't fail if no hits found
 
-    # Step 2: Parse RPS-BLAST results into structured JSON.
-    # Uses the parse_rpsblast.py script from bin/
-    parse_rpsblast.py \\
-        --input rpsblast_raw.out \\
-        --output cdd_results.json
+    # Parse RPS-BLAST results into structured JSON (inline Python)
+    python3 -c "
+import json, sys
+from collections import defaultdict
+
+results = defaultdict(lambda: {'domains': [], 'sites': []})
+try:
+    with open('rpsblast_raw.out') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            fields = line.split('\\t')
+            if len(fields) < 12:
+                continue
+            pid = fields[0]
+            sid = fields[1]
+            acc = sid.split('|')[-1] if '|' in sid else sid
+            stitle = fields[12] if len(fields) > 12 else sid
+            parts = stitle.split(',', 1)
+            name = parts[0].strip()
+            desc = parts[1].strip() if len(parts) > 1 else ''
+            try:
+                results[pid]['domains'].append({
+                    'accession': acc, 'name': name, 'description': desc,
+                    'superfamily': '', 'evalue': float(fields[10]),
+                    'bitscore': float(fields[11]),
+                    'from': int(fields[6]), 'to': int(fields[7])
+                })
+            except (ValueError, IndexError):
+                continue
+except FileNotFoundError:
+    pass
+
+for pid in results:
+    results[pid]['domains'].sort(key=lambda d: d['from'])
+
+with open('cdd_results.json', 'w') as f:
+    json.dump(dict(results), f, indent=2)
+
+n_prot = len(results)
+n_dom = sum(len(r['domains']) for r in results.values())
+print(f'Parsed {n_dom} domains across {n_prot} proteins', file=sys.stderr)
+"
 
     cat <<-VERSIONS > versions.yml
     "${task.process}":

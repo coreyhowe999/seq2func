@@ -3,27 +3,9 @@
  * FoldSeek Module — Structural Homology Search
  * =============================================================================
  *
- * FoldSeek enables ultra-fast protein structure comparison by searching
- * structural databases using 3Di structural alphabet sequences.
- *
- * Why structural search matters:
- *   Proteins with similar 3D structures often share evolutionary origins
- *   and biological functions, even when their amino acid sequences have
- *   diverged beyond the detection limit of sequence-based methods like BLAST.
- *
- *   Example: Two proteins may share only 15% sequence identity (below BLAST's
- *   detection limit), yet fold into the same 3D structure and perform the
- *   same enzymatic function.  FoldSeek can detect these relationships because
- *   it compares structural features rather than sequence.
- *
- * How FoldSeek works:
- *   FoldSeek represents protein structures as sequences of 3Di tokens and
- *   uses a fast k-mer prefilter + Smith-Waterman alignment (similar to
- *   MMseqs2) to search structural databases.
- *
- *   Input: 3Di sequences from ProstT5 + amino acid sequences
- *   Database: PDB (or AlphaFold DB, UniProt, etc.)
- *   Output: Structural homologs ranked by E-value
+ * Searches for structural homologs using 3Di structural alphabet sequences
+ * predicted by ProstT5.  Proteins with similar 3D structures often share
+ * function even when sequence identity is below BLAST detection limits.
  *
  * This process DEPENDS on ProstT5 output (3Di sequences).
  *
@@ -41,11 +23,11 @@ process FOLDSEEK_SEARCH {
 
     input:
     tuple val(meta), path(structures_3di)   // 3Di sequences from ProstT5
-    tuple val(meta), path(proteins)          // Original amino acid sequences
+    tuple val(meta2), path(proteins)         // Original AA sequences (for output context)
     path(foldseek_db)                        // FoldSeek target database
 
     output:
-    tuple val(meta), path("foldseek_results.json"), emit: annotations    // Parsed structural homologs
+    tuple val(meta), path("foldseek_results.json"), emit: annotations
     path("versions.yml"),                           emit: versions
 
     script:
@@ -53,35 +35,59 @@ process FOLDSEEK_SEARCH {
     #!/bin/bash
     set -euo pipefail
 
-    # Run FoldSeek easy-search.
-    #
-    # easy-search is a convenience wrapper that:
-    #   1. Creates a query database from the input sequences
-    #   2. Runs the search (prefilter + alignment)
-    #   3. Outputs results in tabular format
-    #
-    # --format-output: Define custom output columns
-    # -e: E-value threshold
-    # --threads: Number of search threads
-    # tmpFolder: Required temporary directory for FoldSeek
-    #
-    # Output columns:
-    #   query, target, fident, alnlen, mismatch, gapopen,
-    #   qstart, qend, tstart, tend, evalue, bits, taxid, taxname, theader
+    # FoldSeek easy-search using 3Di structural sequences
+    # The 3Di FASTA from ProstT5 is the query — this enables structural comparison
     foldseek easy-search \\
-        ${proteins} \\
+        ${structures_3di} \\
         ${foldseek_db} \\
         foldseek_results.tsv \\
         tmpFolder \\
         --format-output "query,target,fident,alnlen,mismatch,gapopen,qstart,qend,tstart,tend,evalue,bits,taxid,taxname,theader" \\
         -e ${params.evalue} \\
         --threads ${task.cpus} \\
-        || true  # Don't fail if no hits found
+        || true  # Don't fail if no hits
 
-    # Parse tabular results into structured JSON.
-    parse_foldseek.py \\
-        --input foldseek_results.tsv \\
-        --output foldseek_results.json
+    # Parse FoldSeek results into JSON (inline Python)
+    python3 -c "
+import json, sys
+from collections import defaultdict
+
+results = defaultdict(list)
+try:
+    with open('foldseek_results.tsv') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            fields = line.split('\\t')
+            if len(fields) < 12:
+                continue
+            pid = fields[0]
+            try:
+                results[pid].append({
+                    'target_id': fields[1],
+                    'target_name': fields[14] if len(fields) > 14 else fields[1],
+                    'identity': float(fields[2]),
+                    'evalue': float(fields[10]),
+                    'alignment_length': int(fields[3]),
+                    'taxonomy': fields[13] if len(fields) > 13 else '',
+                })
+            except (ValueError, IndexError):
+                continue
+except FileNotFoundError:
+    pass
+
+output = {}
+for pid, hits in results.items():
+    hits.sort(key=lambda h: h['evalue'])
+    output[pid] = {'hits': hits[:5]}
+
+with open('foldseek_results.json', 'w') as f:
+    json.dump(output, f, indent=2)
+
+n = sum(len(v['hits']) for v in output.values())
+print(f'Parsed {n} hits across {len(output)} proteins', file=sys.stderr)
+" || echo '{}' > foldseek_results.json
 
     cat <<-VERSIONS > versions.yml
     "${task.process}":

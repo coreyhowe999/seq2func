@@ -372,11 +372,10 @@ workflow {
         ch_cdd = CDD_SEARCH.out.annotations
         CDD_SEARCH.out.annotations.subscribe { sendStatusUpdate('CDD_SEARCH', 'completed') }
     } else {
-        ch_cdd = TRANSDECODER_PREDICT.out.proteins.map { meta, proteins ->
-            // Create an empty CDD result JSON
-            def empty_json = file("${workDir}/empty_cdd.json")
-            empty_json.text = '{}'
-            [meta, empty_json]
+        // When CDD is skipped, create a placeholder channel with the same
+        // tuple structure: [meta, file].  The merge script handles "NO_CDD" by name.
+        ch_cdd = TRANSDECODER_PREDICT.out.proteins.map { meta, prot ->
+            [meta, file('NO_CDD')]
         }
     }
 
@@ -387,7 +386,10 @@ workflow {
         ch_prostt5_3di = PROSTT5_PREDICT.out.structures_3di
         PROSTT5_PREDICT.out.structures_3di.subscribe { sendStatusUpdate('PROSTT5_PREDICT', 'completed') }
     } else {
-        ch_prostt5_3di = Channel.empty()
+        // When ProstT5 is skipped, create a matching placeholder tuple channel
+        ch_prostt5_3di = TRANSDECODER_PREDICT.out.proteins.map { meta, prot ->
+            [meta, file('NO_PROSTT5')]
+        }
     }
 
 
@@ -401,7 +403,10 @@ workflow {
         ch_foldseek = FOLDSEEK_SEARCH.out.annotations
         FOLDSEEK_SEARCH.out.annotations.subscribe { sendStatusUpdate('FOLDSEEK_SEARCH', 'completed') }
     } else {
-        ch_foldseek = Channel.empty()
+        // When FoldSeek is skipped, create a matching placeholder tuple channel
+        ch_foldseek = TRANSDECODER_PREDICT.out.proteins.map { meta, prot ->
+            [meta, file('NO_FOLDSEEK')]
+        }
     }
 
 
@@ -411,19 +416,15 @@ workflow {
      * Combine all annotation sources into a single JSON file per protein.
      * This is the final GATHER step that joins the three annotation branches.
      *
-     * Channel handling for optional outputs:
-     *   - CDD is always available (required step unless skipped)
-     *   - ProstT5 3Di may be empty (if --skip_prostt5)
-     *   - FoldSeek may be empty (if --skip_foldseek or --skip_prostt5)
-     *
-     * We use .ifEmpty() to provide placeholder files when steps are skipped,
-     * so MERGE_RESULTS always receives the expected number of inputs.
+     * All four input channels emit consistent tuples: [meta, file]
+     * When a step is skipped, its channel emits [meta, file('NO_<STEP>')]
+     * and the merge script handles placeholders by filename prefix "NO_".
      */
     MERGE_RESULTS(
         TRANSDECODER_PREDICT.out.proteins,
         ch_cdd,
-        ch_prostt5_3di.ifEmpty(file('NO_PROSTT5')),
-        ch_foldseek.ifEmpty(file('NO_FOLDSEEK'))
+        ch_prostt5_3di,
+        ch_foldseek
     )
     MERGE_RESULTS.out.annotations.subscribe { sendStatusUpdate('MERGE_RESULTS', 'completed') }
 }

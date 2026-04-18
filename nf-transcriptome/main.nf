@@ -364,10 +364,13 @@ workflow {
      */
 
     // ── Branch A: CDD Domain Search ────────────────────────────────────────
+    // CDD is a multi-file database (Cdd.00.aux, Cdd.00.freq, etc.)
+    // We need to stage ALL files matching the prefix, not just one.
     if (!params.skip_cdd) {
+        ch_cdd_db = Channel.fromPath("${params.cdd_db}*", checkIfExists: false).collect()
         CDD_SEARCH(
             TRANSDECODER_PREDICT.out.proteins,
-            Channel.fromPath(params.cdd_db, checkIfExists: false)
+            ch_cdd_db
         )
         ch_cdd = CDD_SEARCH.out.annotations
         CDD_SEARCH.out.annotations.subscribe { sendStatusUpdate('CDD_SEARCH', 'completed') }
@@ -399,11 +402,13 @@ workflow {
 
 
     // ── Branch C: FoldSeek Structural Search ───────────────────────────────
+    // FoldSeek database is multi-file (pdb, pdb.index, pdb.dbtype, pdb_ss, etc.)
     if (!params.skip_prostt5 && !params.skip_foldseek) {
+        ch_foldseek_db = Channel.fromPath("${params.foldseek_db}*", checkIfExists: false).collect()
         FOLDSEEK_SEARCH(
             PROSTT5_PREDICT.out.structures_3di,
             TRANSDECODER_PREDICT.out.proteins,
-            Channel.fromPath(params.foldseek_db, checkIfExists: false)
+            ch_foldseek_db
         )
         ch_foldseek = FOLDSEEK_SEARCH.out.annotations
         FOLDSEEK_SEARCH.out.annotations.subscribe { sendStatusUpdate('FOLDSEEK_SEARCH', 'completed') }

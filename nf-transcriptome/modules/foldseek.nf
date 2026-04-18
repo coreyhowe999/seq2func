@@ -24,7 +24,7 @@ process FOLDSEEK_SEARCH {
     input:
     tuple val(meta), path(structures_3di)   // 3Di sequences from ProstT5
     tuple val(meta2), path(proteins)         // Original AA sequences (for output context)
-    path(foldseek_db)                        // FoldSeek target database
+    path(foldseek_db_files)                   // All pdb* files staged together
 
     output:
     tuple val(meta), path("foldseek_results.json"), emit: annotations
@@ -35,11 +35,13 @@ process FOLDSEEK_SEARCH {
     #!/bin/bash
     set -euo pipefail
 
+    # Determine FoldSeek database prefix from staged files
+    FS_PREFIX=\$(ls pdb.dbtype 2>/dev/null && echo "pdb" || ls *.dbtype 2>/dev/null | head -1 | sed 's/\\.dbtype//')
+
     # FoldSeek easy-search using 3Di structural sequences
-    # The 3Di FASTA from ProstT5 is the query — this enables structural comparison
     foldseek easy-search \\
         ${structures_3di} \\
-        ${foldseek_db} \\
+        \$FS_PREFIX \\
         foldseek_results.tsv \\
         tmpFolder \\
         --format-output "query,target,fident,alnlen,mismatch,gapopen,qstart,qend,tstart,tend,evalue,bits,taxid,taxname,theader" \\

@@ -1,0 +1,7 @@
+name = "seq2func-proxy"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+routes = [
+  { pattern = "seq2func.win/*", zone_name = "seq2func.win" }
+]

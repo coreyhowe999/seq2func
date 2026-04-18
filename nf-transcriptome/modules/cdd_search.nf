@@ -24,7 +24,7 @@ process CDD_SEARCH {
 
     input:
     tuple val(meta), path(proteins)
-    path(cdd_db)
+    path(cdd_db_files)    // All Cdd.* files staged together
 
     output:
     tuple val(meta), path("cdd_results.json"),  emit: annotations
@@ -36,10 +36,14 @@ process CDD_SEARCH {
     #!/bin/bash
     set -euo pipefail
 
+    # Determine CDD database prefix from staged files
+    # Files are named Cdd.00.aux, Cdd.00.freq, etc — prefix is "Cdd"
+    CDD_PREFIX=\$(ls Cdd*.aux 2>/dev/null | head -1 | sed 's/\\..*//') || CDD_PREFIX="Cdd"
+
     # Run RPS-BLAST against CDD
     rpsblast \
         -query ${proteins} \
-        -db ${cdd_db} \
+        -db \$CDD_PREFIX \
         -out rpsblast_raw.out \
         -evalue ${params.evalue} \
         -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore stitle" \

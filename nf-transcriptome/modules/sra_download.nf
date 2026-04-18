@@ -44,70 +44,28 @@ process SRA_DOWNLOAD {
 
     echo "=== Downloading FASTQ for ${srr_id} ==="
 
-    # Strategy: Download from EBI's European Nucleotide Archive (ENA).
-    # ENA provides direct FASTQ downloads via HTTP — no SRA toolkit needed.
-    # This avoids the prefetch/fasterq-dump segfault issues on GCP.
-    #
-    # ENA URL pattern:
-    #   https://ftp.sra.ebi.ac.uk/vol1/fastq/SRR543/006/SRR5437876/SRR5437876_1.fastq.gz
-    #   The subdirectory uses the first 6 chars of the accession + zero-padded last digit
+    # Strategy: Use the ENA API to get the exact FASTQ download URLs.
+    # This is more reliable than constructing URLs manually.
+    # ENA provides pre-computed FASTQ files via HTTP — no SRA toolkit needed.
+    echo "  Querying ENA API for FASTQ URLs..."
+    ENA_RESPONSE=\$(curl -sf "https://www.ebi.ac.uk/ena/portal/api/filereport?accession=${srr_id}&result=read_run&fields=fastq_ftp&format=tsv" 2>/dev/null || echo "")
 
-    # Build the ENA FTP path
-    # SRR5437876 → SRR543/006/SRR5437876 (first 6 chars / zero-padded remainder)
-    SRR="${srr_id}"
-    SRR6="\${SRR:0:6}"
-    LEN=\${#SRR}
+    if echo "\$ENA_RESPONSE" | grep -q "fastq_ftp" && echo "\$ENA_RESPONSE" | grep -q "ftp.sra.ebi.ac.uk"; then
+        # Parse the FTP URLs from the ENA response and convert to HTTPS
+        FASTQ_URLS=\$(echo "\$ENA_RESPONSE" | tail -1 | awk -F'\\t' '{print \$NF}' | tr ';' '\\n')
 
-    if [ "\$LEN" -gt 9 ]; then
-        SUBDIR="\${SRR6}/0\${SRR:9}"
-    elif [ "\$LEN" -eq 10 ]; then
-        SUBDIR="\${SRR6}/0\${SRR:9}"
-    elif [ "\$LEN" -eq 9 ]; then
-        SUBDIR="\${SRR6}"
-    else
-        SUBDIR="\${SRR6}"
-    fi
-
-    ENA_BASE="https://ftp.sra.ebi.ac.uk/vol1/fastq/\${SUBDIR}/${srr_id}"
-
-    echo "  Trying ENA: \${ENA_BASE}"
-
-    # Try paired-end first
-    PAIRED=false
-    if curl -sfI "\${ENA_BASE}/${srr_id}_1.fastq.gz" >/dev/null 2>&1; then
-        echo "  Downloading paired-end FASTQ from ENA..."
-        curl -sL "\${ENA_BASE}/${srr_id}_1.fastq.gz" -o "${srr_id}_1.fastq.gz" &
-        curl -sL "\${ENA_BASE}/${srr_id}_2.fastq.gz" -o "${srr_id}_2.fastq.gz" &
+        echo "  Downloading FASTQ files from ENA..."
+        for URL in \$FASTQ_URLS; do
+            FILENAME=\$(basename "\$URL")
+            echo "    \$FILENAME"
+            curl -sL "https://\$URL" -o "\$FILENAME" &
+        done
         wait
-        PAIRED=true
-        echo "  Downloaded paired-end reads"
-    elif curl -sfI "\${ENA_BASE}/${srr_id}.fastq.gz" >/dev/null 2>&1; then
-        echo "  Downloading single-end FASTQ from ENA..."
-        curl -sL "\${ENA_BASE}/${srr_id}.fastq.gz" -o "${srr_id}.fastq.gz"
-        echo "  Downloaded single-end reads"
+        echo "  ENA download complete"
     else
-        echo "  ENA download not available. Trying NCBI fasterq-dump..."
-        # Fallback: use fasterq-dump if available in the container
-        if command -v fasterq-dump >/dev/null 2>&1; then
-            SCRATCH="/tmp/sra_scratch_${srr_id}"
-            mkdir -p "\$SCRATCH"
-            fasterq-dump ${srr_id} \\
-                --outdir "\$SCRATCH" \\
-                --temp "\$SCRATCH" \\
-                --split-3 \\
-                --threads ${task.cpus} \\
-                --skip-technical
-            if command -v pigz >/dev/null 2>&1; then
-                pigz -p ${task.cpus} "\$SCRATCH"/*.fastq
-            else
-                gzip "\$SCRATCH"/*.fastq
-            fi
-            cp "\$SCRATCH"/*.fastq.gz .
-            rm -rf "\$SCRATCH"
-        else
-            echo "ERROR: Cannot download ${srr_id} — neither ENA nor SRA tools available"
-            exit 1
-        fi
+        echo "  ENA API did not return FASTQ URLs for ${srr_id}"
+        echo "  ERROR: Cannot download ${srr_id}"
+        exit 1
     fi
 
     echo "=== Detecting layout ==="

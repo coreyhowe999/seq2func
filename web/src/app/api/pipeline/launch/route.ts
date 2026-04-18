@@ -29,8 +29,16 @@ function extractSource(line: string): string {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { srrId, sampleName, runId, profile: selectedProfile } = body;
+    const { srrId, sampleName, runId, profile: selectedProfile, foldseekDb } = body;
     const nfProfile = selectedProfile || "standard";
+
+    // Map FoldSeek DB selection to GCS path
+    const FOLDSEEK_DB_MAP: Record<string, string> = {
+      pdb: "foldseek/pdb",
+      swissprot: "foldseek/swissprot",
+      proteome: "foldseek/proteome",
+      uniprot50: "foldseek/uniprot50",
+    };
 
     if (!srrId || !SRR_REGEX.test(srrId)) {
       return NextResponse.json(
@@ -137,6 +145,11 @@ export async function POST(request: NextRequest) {
       if (process.env.GCP_PROJECT_ID) nfArgs.push("--gcp_project", process.env.GCP_PROJECT_ID);
       if (process.env.GCP_BUCKET) nfArgs.push("--gcp_bucket", process.env.GCP_BUCKET);
       if (process.env.GCP_REGION) nfArgs.push("--gcp_region", process.env.GCP_REGION);
+
+      // Set FoldSeek database path based on user selection
+      if (foldseekDb && FOLDSEEK_DB_MAP[foldseekDb] && process.env.GCP_BUCKET) {
+        nfArgs.push("--foldseek_db", `gs://${process.env.GCP_BUCKET}/databases/${FOLDSEEK_DB_MAP[foldseekDb]}`);
+      }
     }
 
     const nfProcess = spawn("nextflow", nfArgs, {

@@ -13,6 +13,7 @@ export default function HomePage() {
   const [srrId, setSrrId] = useState("");
   const [sampleName, setSampleName] = useState("");
   const [profile, setProfile] = useState("standard");
+  const [foldseekDb, setFoldseekDb] = useState("pdb");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [runs, setRuns] = useState<PipelineRun[]>([]);
@@ -53,6 +54,7 @@ export default function HomePage() {
           sampleName: sampleName.trim() || trimmed,
           runId,
           profile,
+          foldseekDb: profile === "gcp" ? foldseekDb : undefined,
         }),
       });
 
@@ -144,6 +146,25 @@ export default function HomePage() {
               </p>
             )}
           </div>
+
+          {profile === "gcp" && (
+            <div>
+              <label htmlFor="foldseekDb" className="block text-sm font-medium text-gray-300 mb-2">
+                FoldSeek Structure Database
+              </label>
+              <select
+                id="foldseekDb"
+                value={foldseekDb}
+                onChange={(e) => setFoldseekDb(e.target.value)}
+                className="input-field"
+              >
+                <option value="pdb">PDB — 200K experimental structures (~2 min/1K proteins)</option>
+                <option value="swissprot">AlphaFold/Swiss-Prot — 500K curated (~4 min/1K proteins)</option>
+                <option value="proteome">AlphaFold/Proteome — 48M structures (~2 hrs/1K proteins)</option>
+                <option value="uniprot50">AlphaFold/UniProt50 — 54M clustered (~2.5 hrs/1K proteins)</option>
+              </select>
+            </div>
+          )}
 
           {error && (
             <div className="bg-red-900/30 border border-red-700 rounded-lg p-3">

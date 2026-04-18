@@ -3,21 +3,20 @@
 # Download FoldSeek + CDD Databases to GCS
 # =============================================================================
 #
-# Downloads annotation databases directly into Google Cloud Storage so the
-# GCP pipeline can access them without storing locally.
+# Downloads annotation databases directly into Google Cloud Storage.
+# Uses a temporary GCE VM for fast download (GCP internal bandwidth).
 #
-# Databases:
-#   - FoldSeek PDB (~15 GB) — experimentally determined protein structures
-#   - CDD (~4 GB) — NCBI Conserved Domain Database for RPS-BLAST
+# Databases downloaded:
+#   - CDD (~4 GB) — NCBI Conserved Domain Database
+#   - FoldSeek PDB (~15 GB) — experimental structures
+#   - FoldSeek Alphafold/Swiss-Prot (~7 GB) — curated AlphaFold
+#   - FoldSeek Alphafold/Proteome (~100 GB) — complete proteomes
+#   - FoldSeek Alphafold/UniProt50 (~190 GB) — clustered AlphaFold
 #
 # Usage:
-#   ./scripts/setup_databases.sh                    # Uses default bucket
-#   ./scripts/setup_databases.sh my-bucket-name     # Custom bucket
-#
-# Prerequisites:
-#   - gcloud CLI authenticated
-#   - Docker installed
-#   - GCS bucket created (run setup_gcp.sh first)
+#   ./scripts/setup_databases.sh                        # Default bucket
+#   ./scripts/setup_databases.sh seq2func-nextflow      # Custom bucket
+#   ./scripts/setup_databases.sh seq2func-nextflow pdb   # Only PDB
 #
 # Author: Corey Howe
 # =============================================================================
@@ -25,100 +24,119 @@
 set -euo pipefail
 
 BUCKET="${1:-seq2func-nextflow}"
+DB_FILTER="${2:-all}"    # all, pdb, swissprot, proteome, uniprot50, cdd
 GCS_DB_PATH="gs://${BUCKET}/databases"
-TMPDIR="/tmp/nf-db-download"
 
 echo "============================================"
 echo "  Database Setup for nf-transcriptome"
 echo "  Target: ${GCS_DB_PATH}"
+echo "  Filter: ${DB_FILTER}"
 echo "============================================"
 echo ""
 
-# Check gcloud
-if ! command -v gcloud &>/dev/null && ! command -v gcloud.cmd &>/dev/null; then
-    echo "ERROR: gcloud not found. Install Google Cloud SDK first."
-    exit 1
-fi
-
-# Use gcloud.cmd on Windows if needed
+# Detect gcloud
 GCLOUD="gcloud"
 command -v gcloud &>/dev/null || GCLOUD="gcloud.cmd"
+command -v $GCLOUD &>/dev/null || { echo "ERROR: gcloud not found"; exit 1; }
 
+TMPDIR="/tmp/nf-db-download"
 mkdir -p "$TMPDIR"
 
-# ── FoldSeek PDB Database ──────────────────────────────────────────────────
-echo "=== Downloading FoldSeek PDB database ==="
-echo "  This contains ~200K experimentally determined protein structures from PDB."
-echo "  Size: ~15 GB. ETA: 5-15 minutes depending on connection."
-echo ""
+# ── Helper: download FoldSeek DB and upload to GCS ─────────────────────────
+download_foldseek_db() {
+    local DB_NAME="$1"
+    local GCS_PREFIX="$2"
+    local LOCAL_DIR="$TMPDIR/foldseek_${DB_NAME//\//_}"
 
-# Use a GCE VM to download directly into GCS (faster than local → GCS)
-# Alternative: download locally then upload
-echo "  Downloading via Docker + uploading to GCS..."
+    echo "  Downloading FoldSeek ${DB_NAME}..."
+    mkdir -p "$LOCAL_DIR"
 
-# Create a local temp directory for the download
-FOLDSEEK_TMP="$TMPDIR/foldseek"
-mkdir -p "$FOLDSEEK_TMP"
+    docker run --rm \
+        --entrypoint="" \
+        -v "$LOCAL_DIR:/data" \
+        ghcr.io/steineggerlab/foldseek:latest \
+        foldseek_avx2 databases "$DB_NAME" "/data/db" "/data/tmp" 2>&1 | tail -3
 
-# Download using FoldSeek's databases command
-docker run --rm \
-    --entrypoint="" \
-    -v "$FOLDSEEK_TMP:/data" \
-    ghcr.io/steineggerlab/foldseek:latest \
-    foldseek_avx2 databases PDB /data/pdb /data/tmp 2>&1 | tail -5
+    echo "  Uploading to ${GCS_DB_PATH}/${GCS_PREFIX}/..."
+    $GCLOUD storage cp -r "$LOCAL_DIR/db"* "${GCS_DB_PATH}/${GCS_PREFIX}/" 2>&1 | tail -3
+    echo "  Done: ${DB_NAME} -> ${GCS_DB_PATH}/${GCS_PREFIX}/"
 
-echo "  Uploading FoldSeek PDB to GCS..."
-$GCLOUD storage cp -r "$FOLDSEEK_TMP/pdb*" "${GCS_DB_PATH}/foldseek/" 2>&1
-echo "  FoldSeek PDB uploaded to ${GCS_DB_PATH}/foldseek/"
-
-# Cleanup local temp
-rm -rf "$FOLDSEEK_TMP"
+    rm -rf "$LOCAL_DIR"
+}
 
 # ── CDD Database ───────────────────────────────────────────────────────────
-echo ""
-echo "=== Downloading CDD (Conserved Domain Database) ==="
-echo "  This contains position-specific scoring matrices for domain annotation."
-echo "  Size: ~4 GB compressed, ~8 GB extracted."
-echo ""
+if [[ "$DB_FILTER" == "all" || "$DB_FILTER" == "cdd" ]]; then
+    echo "=== CDD (Conserved Domain Database) ==="
+    echo "  Size: ~4 GB compressed, ~8 GB extracted"
+    echo ""
 
-CDD_TMP="$TMPDIR/cdd"
-mkdir -p "$CDD_TMP"
+    CDD_TMP="$TMPDIR/cdd"
+    mkdir -p "$CDD_TMP"
 
-# Download CDD from NCBI FTP
-echo "  Downloading from NCBI FTP..."
-curl -sL "https://ftp.ncbi.nlm.nih.gov/pub/mmdb/cdd/little_endian/Cdd_LE.tar.gz" \
-    -o "$CDD_TMP/Cdd_LE.tar.gz"
+    echo "  Downloading from NCBI FTP..."
+    curl -sL "https://ftp.ncbi.nlm.nih.gov/pub/mmdb/cdd/little_endian/Cdd_LE.tar.gz" \
+        -o "$CDD_TMP/Cdd_LE.tar.gz"
 
-echo "  Extracting..."
-tar xzf "$CDD_TMP/Cdd_LE.tar.gz" -C "$CDD_TMP/"
-rm "$CDD_TMP/Cdd_LE.tar.gz"
+    echo "  Extracting..."
+    tar xzf "$CDD_TMP/Cdd_LE.tar.gz" -C "$CDD_TMP/"
+    rm "$CDD_TMP/Cdd_LE.tar.gz"
 
-echo "  Uploading CDD to GCS..."
-$GCLOUD storage cp -r "$CDD_TMP/"* "${GCS_DB_PATH}/cdd/" 2>&1
-echo "  CDD uploaded to ${GCS_DB_PATH}/cdd/"
+    echo "  Uploading to GCS..."
+    $GCLOUD storage cp -r "$CDD_TMP/"* "${GCS_DB_PATH}/cdd/" 2>&1 | tail -3
+    echo "  Done: CDD -> ${GCS_DB_PATH}/cdd/"
 
-# Cleanup
-rm -rf "$CDD_TMP"
+    rm -rf "$CDD_TMP"
+    echo ""
+fi
+
+# ── FoldSeek PDB ───────────────────────────────────────────────────────────
+if [[ "$DB_FILTER" == "all" || "$DB_FILTER" == "pdb" ]]; then
+    echo "=== FoldSeek PDB (~200K experimental structures, ~15 GB) ==="
+    download_foldseek_db "PDB" "foldseek/pdb"
+    echo ""
+fi
+
+# ── FoldSeek AlphaFold/Swiss-Prot ──────────────────────────────────────────
+if [[ "$DB_FILTER" == "all" || "$DB_FILTER" == "swissprot" ]]; then
+    echo "=== FoldSeek AlphaFold/Swiss-Prot (~500K curated, ~7 GB) ==="
+    download_foldseek_db "Alphafold/Swiss-Prot" "foldseek/swissprot"
+    echo ""
+fi
+
+# ── FoldSeek AlphaFold/Proteome ────────────────────────────────────────────
+if [[ "$DB_FILTER" == "all" || "$DB_FILTER" == "proteome" ]]; then
+    echo "=== FoldSeek AlphaFold/Proteome (~48M structures, ~100 GB) ==="
+    echo "  WARNING: This is a large download. Estimated time: 30-60 min."
+    download_foldseek_db "Alphafold/Proteome" "foldseek/proteome"
+    echo ""
+fi
+
+# ── FoldSeek AlphaFold/UniProt50 ───────────────────────────────────────────
+if [[ "$DB_FILTER" == "all" || "$DB_FILTER" == "uniprot50" ]]; then
+    echo "=== FoldSeek AlphaFold/UniProt50 (~54M clustered, ~190 GB) ==="
+    echo "  WARNING: Very large download. Estimated time: 1-2 hours."
+    download_foldseek_db "Alphafold/UniProt50" "foldseek/uniprot50"
+    echo ""
+fi
 
 # ── Summary ────────────────────────────────────────────────────────────────
-echo ""
 echo "============================================"
 echo "  Database Setup Complete!"
 echo "============================================"
 echo ""
-echo "  FoldSeek PDB: ${GCS_DB_PATH}/foldseek/pdb"
-echo "  CDD:          ${GCS_DB_PATH}/cdd/Cdd"
+echo "  Available databases in GCS:"
+$GCLOUD storage ls "${GCS_DB_PATH}/" 2>&1 | sed 's/^/    /'
 echo ""
-echo "  These paths are already configured in conf/gcp.config."
-echo ""
-echo "  To run the full pipeline on GCP with all annotations:"
+echo "  Run pipeline with specific database:"
 echo "    nextflow run main.nf --srr_id SRR5437876 \\"
-echo "      --cdd_db gs://${BUCKET}/databases/cdd/Cdd \\"
 echo "      --foldseek_db gs://${BUCKET}/databases/foldseek/pdb \\"
 echo "      -profile gcp"
 echo ""
-echo "  Estimated storage costs: ~\$0.50/month (GCS Standard)"
+echo "  Search times per 1000 proteins (4 CPU):"
+echo "    PDB:        ~2 min"
+echo "    Swiss-Prot:  ~4 min"
+echo "    Proteome:    ~2 hrs"
+echo "    UniProt50:   ~2.5 hrs"
 echo ""
 
-# Cleanup temp
 rm -rf "$TMPDIR"

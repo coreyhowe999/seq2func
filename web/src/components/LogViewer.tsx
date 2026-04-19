@@ -44,7 +44,7 @@ export default function LogViewer({ runId, isActive }: LogViewerProps) {
       const res = await fetch(url);
       if (!res.ok) return;
 
-      const data = await res.json();
+      const data = (await res.json()) as { logs?: LogEntry[] };
       const newLogs: LogEntry[] = data.logs || [];
 
       if (lastTimestampRef.current && isActive && newLogs.length > 0) {

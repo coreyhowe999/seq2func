@@ -1,12 +1,36 @@
-# Custom Nextflow runner image with a modern Docker CLI
-# Fixes the API version mismatch when running Docker-in-Docker
-FROM nextflow/nextflow:25.10.4
+# =============================================================================
+# Dockerfile.runner — Nextflow orchestrator for Cloud Run Jobs
+# =============================================================================
+# Boots with SRR_ID + RUN_ID env vars, runs `nextflow run main.nf -profile gcp`,
+# which submits each pipeline step to Google Batch. When the pipeline finishes,
+# runner_ingest.mjs POSTs the final annotations (+ SRA metadata, assembly stats,
+# trace-derived step timings, logs) to seq2func.win/api/pipeline/ingest/<run_id>.
+# =============================================================================
 
-USER root
+FROM eclipse-temurin:21-jdk
 
-# Copy pre-downloaded modern Docker CLI binary
-COPY docker-cli /usr/bin/docker
-RUN chmod +x /usr/bin/docker
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl git jq python3 rsync ca-certificates gnupg && \
+    rm -rf /var/lib/apt/lists/*
 
-# Verify
-RUN /usr/bin/docker --version
+# Nextflow
+RUN curl -sL https://get.nextflow.io | bash && \
+    mv nextflow /usr/local/bin/ && chmod +x /usr/local/bin/nextflow
+
+# Node.js 22 (for runner_ingest.mjs)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
+
+# gcloud + gsutil
+RUN curl -fsSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --install-dir=/opt && \
+    ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud && \
+    ln -sf /opt/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil
+
+# Bake the pipeline sources + runner scripts
+COPY nf-transcriptome /app/nf-transcriptome
+COPY runner_ingest.mjs /app/runner_ingest.mjs
+COPY runner_entrypoint.sh /app/runner_entrypoint.sh
+RUN chmod +x /app/runner_entrypoint.sh
+
+WORKDIR /app
+ENTRYPOINT ["/app/runner_entrypoint.sh"]

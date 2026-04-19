@@ -58,7 +58,7 @@ export default function HomePage() {
         }),
       });
 
-      const data = await res.json();
+      const data = (await res.json()) as { runId?: string; error?: string };
 
       if (!res.ok) {
         setError(data.error || "Failed to launch pipeline");

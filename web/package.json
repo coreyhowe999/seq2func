@@ -16,8 +16,6 @@
     "pages:dev": "npx @cloudflare/next-on-pages && npx wrangler pages dev .vercel/output/static --d1=DB --r2=R2"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.525.0",
-    "better-sqlite3": "^11.0.0",
     "drizzle-orm": "^0.30.0",
     "next": "^15.0.0",
     "react": "^18.2.0",
@@ -26,7 +24,7 @@
   },
   "devDependencies": {
     "@cloudflare/next-on-pages": "^1.13.0",
-    "@types/better-sqlite3": "^7.6.9",
+    "@cloudflare/workers-types": "^4.20240925.0",
     "@types/node": "^20.11.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",

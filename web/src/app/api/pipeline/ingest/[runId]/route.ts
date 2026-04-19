@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import {
   pipelineRuns,
   pipelineSteps,
@@ -12,6 +12,8 @@ import {
 } from "@/lib/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import type { ProteinAnnotation } from "@/lib/types";
+
+export const runtime = "edge";
 
 interface IngestBody {
   annotations: ProteinAnnotation[];
@@ -66,8 +68,6 @@ export async function POST(
     const { runId } = await params;
     const body = (await request.json()) as IngestBody;
     const { annotations, srrId, sampleName, sraMetadata, assemblyStats, stepTimings, logs } = body;
-    const effectiveSrrId = srrId || sraMetadata?.srr_id || runId;
-    const effectiveSampleName = sampleName || effectiveSrrId;
 
     if (!Array.isArray(annotations)) {
       return NextResponse.json(
@@ -76,17 +76,21 @@ export async function POST(
       );
     }
 
+    const db = getDb();
     const now = new Date().toISOString();
+    const effectiveSrrId = srrId || sraMetadata?.srr_id || runId;
+    const effectiveSampleName = sampleName || effectiveSrrId;
 
     // Ensure run exists — create if missing (for runs launched outside the web UI)
-    const existingRun = db
+    const existingRun = await db
       .select()
       .from(pipelineRuns)
       .where(eq(pipelineRuns.id, runId))
       .get();
 
     if (!existingRun) {
-      db.insert(pipelineRuns)
+      await db
+        .insert(pipelineRuns)
         .values({
           id: runId,
           srrId: effectiveSrrId,
@@ -96,7 +100,8 @@ export async function POST(
         .run();
 
       for (const stepName of PIPELINE_STEPS) {
-        db.insert(pipelineSteps)
+        await db
+          .insert(pipelineSteps)
           .values({
             runId,
             stepName,
@@ -109,24 +114,27 @@ export async function POST(
     }
 
     // Idempotent: clear any existing annotation data for this run
-    const existingProteinIds = db
+    const existingProteinRows = await db
       .select({ id: proteins.id })
       .from(proteins)
       .where(eq(proteins.runId, runId))
-      .all()
-      .map((p) => p.id);
+      .all();
+    const existingProteinIds = existingProteinRows.map((p) => p.id);
 
     if (existingProteinIds.length > 0) {
-      db.delete(cddDomains).where(inArray(cddDomains.proteinId, existingProteinIds)).run();
-      db.delete(cddSites).where(inArray(cddSites.proteinId, existingProteinIds)).run();
-      db.delete(foldseekHits).where(inArray(foldseekHits.proteinId, existingProteinIds)).run();
-      db.delete(prostt5Predictions).where(inArray(prostt5Predictions.proteinId, existingProteinIds)).run();
-      db.delete(proteins).where(eq(proteins.runId, runId)).run();
+      await db.delete(cddDomains).where(inArray(cddDomains.proteinId, existingProteinIds)).run();
+      await db.delete(cddSites).where(inArray(cddSites.proteinId, existingProteinIds)).run();
+      await db.delete(foldseekHits).where(inArray(foldseekHits.proteinId, existingProteinIds)).run();
+      await db
+        .delete(prostt5Predictions)
+        .where(inArray(prostt5Predictions.proteinId, existingProteinIds))
+        .run();
+      await db.delete(proteins).where(eq(proteins.runId, runId)).run();
     }
 
     // Insert proteins + nested annotations
     for (const ann of annotations) {
-      const inserted = db
+      const inserted = await db
         .insert(proteins)
         .values({
           runId,
@@ -142,7 +150,8 @@ export async function POST(
       const pid = inserted.id;
 
       for (const d of ann.cdd?.domains || []) {
-        db.insert(cddDomains)
+        await db
+          .insert(cddDomains)
           .values({
             proteinId: pid,
             accession: d.accession,
@@ -158,7 +167,8 @@ export async function POST(
       }
 
       for (const s of ann.cdd?.sites || []) {
-        db.insert(cddSites)
+        await db
+          .insert(cddSites)
           .values({
             proteinId: pid,
             siteType: s.type,
@@ -169,7 +179,8 @@ export async function POST(
       }
 
       for (const h of ann.foldseek?.hits || []) {
-        db.insert(foldseekHits)
+        await db
+          .insert(foldseekHits)
           .values({
             proteinId: pid,
             targetId: h.target_id,
@@ -183,7 +194,8 @@ export async function POST(
       }
 
       if (ann.prostt5?.has_prediction && ann.prostt5?.sequence_3di) {
-        db.insert(prostt5Predictions)
+        await db
+          .insert(prostt5Predictions)
           .values({
             proteinId: pid,
             sequence3di: ann.prostt5.sequence_3di,
@@ -218,9 +230,9 @@ export async function POST(
       if (assemblyStats.n50 != null) runUpdate.n50 = assemblyStats.n50;
     }
 
-    db.update(pipelineRuns).set(runUpdate).where(eq(pipelineRuns.id, runId)).run();
+    await db.update(pipelineRuns).set(runUpdate).where(eq(pipelineRuns.id, runId)).run();
 
-    // Apply per-step timings + metrics if provided; otherwise mark all completed
+    // Apply per-step timings + metrics if provided
     if (stepTimings && stepTimings.length > 0) {
       for (const st of stepTimings) {
         const update: Record<string, unknown> = { status: "completed" };
@@ -228,16 +240,17 @@ export async function POST(
         if (st.completed_at) update.completedAt = st.completed_at;
         if (st.metrics) update.metrics = JSON.stringify(st.metrics);
 
-        const existingStep = db
+        const existingStep = await db
           .select()
           .from(pipelineSteps)
           .where(and(eq(pipelineSteps.runId, runId), eq(pipelineSteps.stepName, st.step_name)))
           .get();
 
         if (existingStep) {
-          db.update(pipelineSteps).set(update).where(eq(pipelineSteps.id, existingStep.id)).run();
+          await db.update(pipelineSteps).set(update).where(eq(pipelineSteps.id, existingStep.id)).run();
         } else {
-          db.insert(pipelineSteps)
+          await db
+            .insert(pipelineSteps)
             .values({
               runId,
               stepName: st.step_name,
@@ -250,7 +263,8 @@ export async function POST(
         }
       }
     } else {
-      db.update(pipelineSteps)
+      await db
+        .update(pipelineSteps)
         .set({ status: "completed", completedAt: now })
         .where(eq(pipelineSteps.runId, runId))
         .run();
@@ -258,9 +272,10 @@ export async function POST(
 
     // Ingest logs if provided (idempotent: wipe + insert)
     if (logs && logs.length > 0) {
-      db.delete(pipelineLogs).where(eq(pipelineLogs.runId, runId)).run();
+      await db.delete(pipelineLogs).where(eq(pipelineLogs.runId, runId)).run();
       for (const entry of logs) {
-        db.insert(pipelineLogs)
+        await db
+          .insert(pipelineLogs)
           .values({
             runId,
             timestamp: entry.timestamp,

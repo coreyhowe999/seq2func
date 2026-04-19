@@ -59,11 +59,7 @@ print('ProstT5 model cached successfully')"
 COPY bin/ /usr/local/bin/
 RUN chmod +x /usr/local/bin/*.py
 
-# Security: non-root user
-RUN groupadd -r pipeline && useradd -r -g pipeline -d /home/pipeline -s /bin/bash pipeline
-RUN mkdir -p /home/pipeline && chown -R pipeline:pipeline /home/pipeline
-
-USER pipeline
-WORKDIR /home/pipeline
+# Run as root for GCP Batch compatibility (FUSE mounts need root)
+WORKDIR /workspace
 
 CMD ["python3", "--version"]

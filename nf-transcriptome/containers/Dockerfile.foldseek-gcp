@@ -1,0 +1,11 @@
+# Simple FoldSeek container without custom entrypoint (GCP Batch compatible)
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y curl python3 && rm -rf /var/lib/apt/lists/*
+
+# Install FoldSeek
+RUN curl -sL https://mmseqs.com/foldseek/foldseek-linux-avx2.tar.gz | tar xz && \
+    cp foldseek/bin/foldseek /usr/local/bin/ && \
+    rm -rf foldseek
+
+CMD ["bash"]

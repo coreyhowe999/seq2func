@@ -11,6 +11,9 @@ RUN npm install --legacy-peer-deps
 
 COPY . .
 
+# USE_MOCK_DATA=true only during `next build` so static page data collection
+# doesn't try to touch a non-existent SQLite file. Runtime value comes from
+# Cloud Run env (USE_MOCK_DATA=false in prod).
 ENV USE_MOCK_DATA=true
 RUN npm run build
 
@@ -20,8 +23,8 @@ FROM node:20-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
-ENV USE_MOCK_DATA=true
 ENV PORT=8080
+# USE_MOCK_DATA and LOCAL_DB_PATH come from Cloud Run env, not baked in.
 
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static

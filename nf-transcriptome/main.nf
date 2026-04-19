@@ -88,7 +88,8 @@ params.cdd_db               = "data/cdd/Cdd"                    // Local CDD dat
 params.foldseek_db          = "data/foldseek/pdb"               // Local FoldSeek database path
 
 // ── Search Parameters ──────────────────────────────────────────────────────
-params.evalue               = 0.01                              // E-value threshold for BLAST/FoldSeek
+params.evalue               = 0.01                              // E-value threshold for BLAST (CDD)
+params.foldseek_evalue      = 10                                 // Separate, more permissive threshold for FoldSeek structural search
 params.max_proteins         = 500                               // Cap proteins to annotate (for demo speed)
 
 // ── Feature Toggles ────────────────────────────────────────────────────────

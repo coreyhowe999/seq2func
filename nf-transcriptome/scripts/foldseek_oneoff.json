@@ -1,0 +1,53 @@
+{
+  "taskGroups": [
+    {
+      "taskSpec": {
+        "runnables": [
+          {
+            "container": {
+              "imageUri": "us-central1-docker.pkg.dev/seq2func/nf-transcriptome/foldseek:latest",
+              "entrypoint": "/bin/bash",
+              "commands": [
+                "-c",
+                "set -euxo pipefail; mkdir -p /tmp/qdb /tmp/tmp_aa /tmp/tmp_ss; echo '=== AA DB ==='; foldseek base:createdb /mnt/disks/bucket/oneoff/full_test_007/aa.fasta /tmp/qdb/query -v 3; ls -la /tmp/qdb/; echo '=== 3Di DB (to sidecar) ==='; foldseek base:createdb /mnt/disks/bucket/oneoff/full_test_007/prostt5_3di_clean.fasta /tmp/tmp_ss/ss -v 3; ls -la /tmp/tmp_ss/; echo '=== RENAME ss DB files to query_ss/query_ss.index/query_ss.dbtype ==='; cp /tmp/tmp_ss/ss /tmp/qdb/query_ss; cp /tmp/tmp_ss/ss.index /tmp/qdb/query_ss.index; cp /tmp/tmp_ss/ss.dbtype /tmp/qdb/query_ss.dbtype; echo '=== Patch query_ss.dbtype to 3Di type (0x0D = 13) ==='; echo '=== Target pdb_ss.dbtype bytes ==='; od -An -tx1 /mnt/disks/bucket/databases/foldseek/pdb/pdb_ss.dbtype; echo '=== query.dbtype bytes ==='; od -An -tx1 /tmp/qdb/query.dbtype; echo '=== Copy target dbtype to query_ss.dbtype ==='; cp /mnt/disks/bucket/databases/foldseek/pdb/pdb_ss.dbtype /tmp/qdb/query_ss.dbtype; od -An -tx1 /tmp/qdb/query_ss.dbtype; ls -la /tmp/qdb/; echo '=== SEARCH ==='; foldseek search /tmp/qdb/query /mnt/disks/bucket/databases/foldseek/pdb/pdb /tmp/aln /tmp/tmpwork --threads 4 -e 100 -s 9.5 -v 3 2>&1 | tail -40; echo '=== CONVERTALIS ==='; foldseek convertalis /tmp/qdb/query /mnt/disks/bucket/databases/foldseek/pdb/pdb /tmp/aln /tmp/results.tsv --format-output 'query,target,fident,alnlen,mismatch,gapopen,qstart,qend,tstart,tend,evalue,bits,taxid,taxname,theader' 2>&1 | tail -20; echo '=== RESULTS ==='; wc -l /tmp/results.tsv; head -20 /tmp/results.tsv; cp /tmp/results.tsv /mnt/disks/bucket/oneoff/full_test_007/foldseek_results.tsv; echo DONE"
+              ],
+              "volumes": ["/mnt/disks/bucket:/mnt/disks/bucket"]
+            }
+          }
+        ],
+        "volumes": [
+          {
+            "gcs": {
+              "remotePath": "seq2func-nextflow"
+            },
+            "mountPath": "/mnt/disks/bucket"
+          }
+        ],
+        "computeResource": {
+          "cpuMilli": 4000,
+          "memoryMib": 8192
+        },
+        "maxRetryCount": 0,
+        "maxRunDuration": "1800s"
+      },
+      "taskCount": 1,
+      "parallelism": 1
+    }
+  ],
+  "allocationPolicy": {
+    "instances": [
+      {
+        "policy": {
+          "machineType": "e2-standard-4",
+          "provisioningModel": "SPOT"
+        }
+      }
+    ],
+    "serviceAccount": {
+      "email": "nextflow-pipeline@seq2func.iam.gserviceaccount.com"
+    }
+  },
+  "logsPolicy": {
+    "destination": "CLOUD_LOGGING"
+  }
+}

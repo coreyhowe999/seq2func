@@ -45,6 +45,9 @@ jobs:
       - name: Deploy to Cloud Run
         run: |
           IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/nf-transcriptome/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          # Update the image only. Env vars are managed via the Cloud Run
+          # console / `gcloud run services update` — the prod config (real DB,
+          # LOCAL_DB_PATH=/tmp/data/local.db) must NOT be clobbered on deploy.
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image=$IMAGE \
             --region=${{ env.REGION }} \
@@ -53,5 +56,4 @@ jobs:
             --port=8080 \
             --memory=512Mi \
             --min-instances=0 \
-            --max-instances=3 \
-            --set-env-vars="USE_MOCK_DATA=true"
+            --max-instances=3

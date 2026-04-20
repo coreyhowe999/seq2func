@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import PipelineStatus from "@/components/PipelineStatus";
@@ -32,7 +34,7 @@ export default function RunDetailPage() {
         `/api/results/${runId}?page=${page}&pageSize=50&search=${encodeURIComponent(search)}`
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = (await res.json()) as RunData;
       setRunData(data);
       setError(null);
     } catch (err) {

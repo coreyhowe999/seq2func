@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const runtime = "edge";
+
 const SRR_REGEX = /^[SDE]RR\d{6,}$/;
 
 export async function GET(request: NextRequest) {
@@ -29,7 +31,7 @@ export async function GET(request: NextRequest) {
     );
 
     if (response.ok) {
-      const data = await response.json();
+      const data = (await response.json()) as { esearchresult?: { count?: string } };
       const count = parseInt(data?.esearchresult?.count || "0");
 
       if (count > 0) {

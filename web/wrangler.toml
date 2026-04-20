@@ -30,11 +30,8 @@ binding = "DB"
 database_name = "nf-transcriptome-db"
 database_id = "bd9f88ec-178e-4e9b-b566-84d8e79ce8c1"
 
-# ── R2 Bucket Binding ──────────────────────────────────────────────────────
-# Create with: npx wrangler r2 bucket create nf-transcriptome
-[[r2_buckets]]
-binding = "R2"
-bucket_name = "nf-transcriptome"
+# R2 is not currently used — all pipeline outputs live in GCS (GCP Batch's
+# workDir). If we later persist log files to R2, re-add the binding here.
 
 # ── Environment Variables ───────────────────────────────────────────────────
 [vars]

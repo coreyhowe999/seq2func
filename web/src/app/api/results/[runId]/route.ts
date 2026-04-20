@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { proteins, cddDomains, cddSites, foldseekHits, prostt5Predictions, pipelineRuns, pipelineSteps } from "@/lib/schema";
-import { eq, like, or, desc, asc } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { mockProteins, mockRun, mockSteps } from "@/lib/mockData";
 import type { ProteinAnnotation } from "@/lib/types";
+
+export const runtime = "edge";
 
 export async function GET(
   request: NextRequest,
@@ -18,24 +20,20 @@ export async function GET(
     const sortField = searchParams.get("sort") || "length";
     const sortOrder = searchParams.get("order") || "desc";
 
-    // Use mock data if configured
     if (process.env.USE_MOCK_DATA === "true") {
       let filtered = [...mockProteins];
-
       if (search) {
         const q = search.toLowerCase();
-        filtered = filtered.filter((p) =>
-          p.protein_id.toLowerCase().includes(q) ||
-          p.cdd.domains.some((d) => d.name.toLowerCase().includes(q)) ||
-          p.foldseek.hits.some((h) => h.target_name.toLowerCase().includes(q))
+        filtered = filtered.filter(
+          (p) =>
+            p.protein_id.toLowerCase().includes(q) ||
+            p.cdd.domains.some((d) => d.name.toLowerCase().includes(q)) ||
+            p.foldseek.hits.some((h) => h.target_name.toLowerCase().includes(q))
         );
       }
-
       const total = filtered.length;
       const start = (page - 1) * pageSize;
       const paginated = filtered.slice(start, start + pageSize);
-
-      // Also return the run info and steps
       return NextResponse.json({
         run: { ...mockRun, steps: mockSteps },
         proteins: paginated,
@@ -45,27 +43,20 @@ export async function GET(
       });
     }
 
-    // Fetch run info with steps
-    const run = db.select().from(pipelineRuns).where(eq(pipelineRuns.id, runId)).get();
+    const db = getDb();
+    const run = await db.select().from(pipelineRuns).where(eq(pipelineRuns.id, runId)).get();
     if (!run) {
       return NextResponse.json({ error: "Run not found" }, { status: 404 });
     }
 
-    const steps = db.select().from(pipelineSteps).where(eq(pipelineSteps.runId, runId)).all();
+    const steps = await db.select().from(pipelineSteps).where(eq(pipelineSteps.runId, runId)).all();
+    const allProteins = await db.select().from(proteins).where(eq(proteins.runId, runId)).all();
 
-    // Fetch proteins for this run
-    let proteinQuery = db.select().from(proteins).where(eq(proteins.runId, runId));
-
-    const allProteins = proteinQuery.all();
-
-    // Build full annotations
-    const annotations: ProteinAnnotation[] = allProteins.map((protein) => {
-      // Get CDD domains
-      const domains = db.select()
-        .from(cddDomains)
-        .where(eq(cddDomains.proteinId, protein.id))
-        .all()
-        .map((d) => ({
+    const annotations: ProteinAnnotation[] = await Promise.all(
+      allProteins.map(async (protein) => {
+        const domains = (
+          await db.select().from(cddDomains).where(eq(cddDomains.proteinId, protein.id)).all()
+        ).map((d) => ({
           accession: d.accession,
           name: d.name,
           description: d.description || "",
@@ -76,23 +67,17 @@ export async function GET(
           to: d.endPos,
         }));
 
-      // Get CDD sites
-      const sites = db.select()
-        .from(cddSites)
-        .where(eq(cddSites.proteinId, protein.id))
-        .all()
-        .map((s) => ({
+        const sites = (
+          await db.select().from(cddSites).where(eq(cddSites.proteinId, protein.id)).all()
+        ).map((s) => ({
           type: s.siteType,
           residues: JSON.parse(s.residues),
           description: s.description || "",
         }));
 
-      // Get FoldSeek hits
-      const fsHits = db.select()
-        .from(foldseekHits)
-        .where(eq(foldseekHits.proteinId, protein.id))
-        .all()
-        .map((h) => ({
+        const fsHits = (
+          await db.select().from(foldseekHits).where(eq(foldseekHits.proteinId, protein.id)).all()
+        ).map((h) => ({
           target_id: h.targetId,
           target_name: h.targetName || "",
           identity: h.identity || 0,
@@ -101,39 +86,39 @@ export async function GET(
           taxonomy: h.taxonomy || "",
         }));
 
-      // Get ProstT5 prediction
-      const prostt5 = db.select()
-        .from(prostt5Predictions)
-        .where(eq(prostt5Predictions.proteinId, protein.id))
-        .get();
+        const prostt5 = await db
+          .select()
+          .from(prostt5Predictions)
+          .where(eq(prostt5Predictions.proteinId, protein.id))
+          .get();
 
-      return {
-        protein_id: protein.proteinId,
-        sequence: protein.sequence,
-        length: protein.length,
-        orf_type: protein.orfType,
-        transcript_id: protein.transcriptId,
-        cdd: { domains, sites },
-        prostt5: {
-          sequence_3di: prostt5?.sequence3di || "",
-          has_prediction: !!prostt5,
-        },
-        foldseek: { hits: fsHits },
-      };
-    });
+        return {
+          protein_id: protein.proteinId,
+          sequence: protein.sequence,
+          length: protein.length,
+          orf_type: protein.orfType,
+          transcript_id: protein.transcriptId,
+          cdd: { domains, sites },
+          prostt5: {
+            sequence_3di: prostt5?.sequence3di || "",
+            has_prediction: !!prostt5,
+          },
+          foldseek: { hits: fsHits },
+        };
+      })
+    );
 
-    // Filter by search
     let filtered = annotations;
     if (search) {
       const q = search.toLowerCase();
-      filtered = filtered.filter((p) =>
-        p.protein_id.toLowerCase().includes(q) ||
-        p.cdd.domains.some((d) => d.name.toLowerCase().includes(q)) ||
-        p.foldseek.hits.some((h) => h.target_name.toLowerCase().includes(q))
+      filtered = filtered.filter(
+        (p) =>
+          p.protein_id.toLowerCase().includes(q) ||
+          p.cdd.domains.some((d) => d.name.toLowerCase().includes(q)) ||
+          p.foldseek.hits.some((h) => h.target_name.toLowerCase().includes(q))
       );
     }
 
-    // Sort
     filtered.sort((a, b) => {
       let cmp = 0;
       switch (sortField) {
@@ -152,7 +137,6 @@ export async function GET(
       return sortOrder === "desc" ? -cmp : cmp;
     });
 
-    // Paginate
     const total = filtered.length;
     const start = (page - 1) * pageSize;
     const paginated = filtered.slice(start, start + pageSize);
@@ -177,9 +161,6 @@ export async function GET(
     });
   } catch (error) {
     console.error("Results fetch error:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch results" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to fetch results" }, { status: 500 });
   }
 }

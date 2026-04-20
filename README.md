@@ -44,27 +44,38 @@ Squalene epoxidase is the biologically expected match — Botryococcus race B ac
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Browser  ──►  seq2func.win  (Cloudflare DNS → Cloud Run)               │
-│                     │                                                     │
-│                     ├─ Next.js 15 UI  (SSR + client-side)               │
-│                     └─ API routes     (Node.js, Drizzle ORM, SQLite)    │
-│                                                                           │
-│  User CLI  ──►  Nextflow orchestrator (laptop or small GCE VM)          │
-│                     │                                                     │
-│                     └─ Google Batch  ──►  N× VMs, one per pipeline step │
-│                                            ├─ Trinity (n2-highmem-8)    │
-│                                            ├─ CDD (e2-standard-4)       │
-│                                            ├─ ProstT5 (g2+L4 GPU)       │
-│                                            ├─ FoldSeek (e2-standard-4)  │
-│                                            └─ ... (spot VMs throughout) │
-│                                                                           │
-│  GCS  ◄──  workDir, databases (PDB 5.6 GiB, CDD), published results     │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Browser  ──►  seq2func.win  (Cloudflare DNS → Pages edge)               │
+│                     │                                                      │
+│                     ├─ Next.js 15 (edge runtime)                          │
+│                     └─ API routes (Drizzle ORM → D1 binding)              │
+│                              │                                             │
+│  POST /api/pipeline/launch   ├─► Worker signs GCP JWT (RS256, Web Crypto) │
+│                              └─► Cloud Run Admin API:                     │
+│                                  run seq2func-nextflow Cloud Run Job      │
+│                                        │                                   │
+│                                        ▼                                   │
+│                           Cloud Run Job container                          │
+│                             (Nextflow + Java + gcloud + pipeline source) │
+│                                        │                                   │
+│                                        ▼                                   │
+│                           Google Batch submits 1 VM per pipeline step:    │
+│                             Trinity (n2-highmem-8) · CDD (e2-standard-4) │
+│                             ProstT5 (g2+L4 GPU)    · FoldSeek (e2-std-4) │
+│                             ... spot + on-demand depending on step        │
+│                                        │                                   │
+│                                        ▼                                   │
+│                           GCS (workDir, databases, published results)    │
+│                                        │                                   │
+│  POST /api/pipeline/status  ◄──────────┤  (each step start/complete)     │
+│  POST /api/pipeline/ingest  ◄──────────┘  (annotations + logs at end)    │
+│                              ▼                                             │
+│                           D1 (persistent)                                  │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-Pipeline status updates stream to the web API as each step starts/completes;
-the UI polls `/api/results/[runId]` and renders live progress + logs.
+The UI polls `/api/results/[runId]` while a run is in flight and renders live
+per-step progress + log stream.
 
 ---
 
@@ -93,10 +104,10 @@ the UI polls `/api/results/[runId]` and renders live progress + logs.
 - [NCBI CDD](https://www.ncbi.nlm.nih.gov/Structure/cdd/cdd.shtml) + RPS-BLAST (conserved domain annotation)
 
 **Web**
-- [Next.js](https://nextjs.org/) 15 (App Router, Server Components, SSR)
-- [Drizzle ORM](https://orm.drizzle.team/) + [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)
+- [Next.js](https://nextjs.org/) 15 (App Router, edge runtime) — deployed to [Cloudflare Pages](https://pages.cloudflare.com/) via [`@cloudflare/next-on-pages`](https://github.com/cloudflare/next-on-pages)
+- [Cloudflare D1](https://developers.cloudflare.com/d1/) for persistent storage (runs, proteins, annotations, logs); [Drizzle ORM](https://orm.drizzle.team/) over the D1 binding
 - [Tailwind CSS](https://tailwindcss.com/)
-- Deployed on [Google Cloud Run](https://cloud.google.com/run) (Cloudflare DNS → Cloud Run, no Worker layer in play currently)
+- Pipeline launch: Worker signs a GCP OAuth JWT (RS256 via Web Crypto) from a stored service-account key, invokes the `seq2func-nextflow` Cloud Run Job, which runs Nextflow and POSTs annotations back to `/api/pipeline/ingest/<run_id>` on completion.
 
 ---
 
@@ -105,57 +116,6 @@ the UI polls `/api/results/[runId]` and renders live progress + logs.
 See [`nf-transcriptome/README.md`](nf-transcriptome/README.md) for pipeline setup (Docker, test datasets, skip flags for runs without GPU/databases) and [`web/README.md`](web/README.md) for the web app.
 
 Fastest path to a working demo without any setup: visit [seq2func.win](https://seq2func.win) and open `full_test_007`.
-
----
-
-## Known issues
-
-- **Pipeline launch from the web is not wired up.** Cloud Run containers have no `nextflow` binary and are capped at ~60 min per request, so `/api/pipeline/launch` fails with `spawn nextflow ENOENT`. Runs today are launched via `nextflow run main.nf -profile gcp` from a laptop or GCE VM, with Nextflow POSTing status updates to seq2func.win as each step completes.
-- **SQLite on Cloud Run's `/tmp` is ephemeral.** The service is currently pinned to `min-instances=1, max-instances=1` so the DB survives between requests. A horizontal scale-out requires migrating to a persistent DB.
-
----
-
-## Roadmap
-
-### 1. Move web app to Cloudflare Workers + D1 (highest priority)
-
-Three of the web's API routes depend on Node.js APIs (`child_process.spawn`, `fs.readFileSync`, `fs.createWriteStream`) that don't exist in Workers. In practice **all three are already broken in prod** for independent reasons — the launch `spawn` can't find a nextflow binary on Cloud Run, and the status route's `fs.readFileSync` looks for `annotations.json` on a Cloud Run `/tmp` that never received the file. Fixing each of them requires code changes anyway, so the Workers migration is a net-simpler refactor than it looks.
-
-**Planned changes:**
-- **[`web/src/lib/db.ts`](web/src/lib/db.ts)** — swap the better-sqlite3 singleton for a runtime-conditional driver: D1 when running on Workers (the `getD1Database()` helper already exists at line 150, just unused), better-sqlite3 when running locally. Drizzle schema already targets both.
-- **[`web/src/app/api/pipeline/launch/route.ts`](web/src/app/api/pipeline/launch/route.ts)** — delete the `spawn(nextflow)` path. The endpoint becomes "create the run row + return the CLI command the user runs externally" until #2 below lands.
-- **[`web/src/app/api/pipeline/status/route.ts`](web/src/app/api/pipeline/status/route.ts)** — delete the `fs.readFileSync(annotations.json)` block; [`/api/pipeline/ingest/[runId]`](web/src/app/api/pipeline/ingest/[runId]/route.ts) already replaces that path by accepting annotations in the request body.
-- **Log streaming** — remove `fs.createWriteStream`; Nextflow already posts log batches via `POST /api/pipeline/status`, which writes directly to D1.
-- **[`web/wrangler.toml`](web/wrangler.toml)** — D1 binding is already configured, just needs a valid `database_id`.
-- **[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)** — swap `docker build` + `gcloud run deploy` for `npx @cloudflare/next-on-pages` + `wrangler pages deploy` (both already in `web/package.json scripts.deploy`).
-
-**Wins:** persistent DB (no more `/tmp` resets on deploy), global edge latency, ~$0 hosting (free tier), removes three known-broken code paths, drops the `min=1/max=1` pinning hack.
-
-**Estimated effort:** 2-3 hours + one D1 schema migration.
-
-### 2. Proper pipeline launch from the web UI
-
-Today the user runs `nextflow run main.nf ...` on their laptop (or a GCE VM), with Nextflow POSTing status updates to seq2func.win. The web UI's launch form is decorative. Options to make it real:
-
-- **Dedicated GCE VM (cheapest, simplest):** always-on `e2-small` (~$5/mo) that polls a small "pending launches" table (or subscribes to Pub/Sub), runs `nextflow -bg` for each row. Web API writes the row. No container cold-start, no per-job billing overhead.
-- **Cloud Run Job (serverless):** `/api/pipeline/launch` calls `gcloud run jobs execute seq2func-nextflow --update-env-vars=SRR_ID=...`. No VM to maintain. Cold-start ~10-30 s.
-- **Cloud Workflows + Batch:** replace Nextflow with GCP's native orchestrator. Biggest rewrite, but native GCP observability and simpler IAM.
-
-Recommendation: **Cloud Run Job.** Lowest ongoing cost, no infrastructure to babysit, and fits cleanly with the Workers migration (Worker → `fetch()` to Cloud Run Admin API).
-
-### 3. Pipeline correctness + robustness
-
-- **Fix Trinity memory mismatch.** [`modules/trinity.nf`](nf-transcriptome/modules/trinity.nf) hardcodes `--max_memory 64G` in the script while the GCP profile only reserves 32 GB on `n2-highmem-8`. Reads from `{task.memory}` instead.
-- **Harden TransDecoder.Predict for tiny datasets.** With <5 ORFs the PWM training step crashes (missing `Rscript` + empty feature matrix). Detect low-ORF cases upstream and pass `--no_refine_starts` or skip the step.
-- **Unchoke the real FoldSeek failure modes.** The `|| true` and `|| echo '{}'` fallbacks are gone (fixed in [`6596652`](https://github.com/coreyhowe999/seq2func/commit/6596652)) so failures now surface. Next: add a health check that asserts `wc -l foldseek_results.tsv > 0` before the step reports success.
-- **Retry strategy for spot-VM preemptions.** Nextflow has `maxSpotAttempts=3` today; surface that in the step's status updates so the UI can show "retrying after preemption" instead of silently repeating.
-
-### 4. Smaller polish
-
-- Add the missing `GCP_SA_KEY` GitHub secret so auto-deploy actually works.
-- Wire up a Linear/issue link from the run detail page for reporting pipeline failures.
-- Add a small "launched from" badge (web-launched vs CLI-launched) so runs of different provenance are distinguishable.
-- Generate shareable permalinks (`seq2func.win/r/<slug>`) for interview-ready demo links.
 
 ---
 

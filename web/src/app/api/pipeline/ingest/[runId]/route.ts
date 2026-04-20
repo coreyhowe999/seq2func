@@ -132,76 +132,112 @@ export async function POST(
       await db.delete(proteins).where(eq(proteins.runId, runId)).run();
     }
 
-    // Insert proteins + nested annotations
-    for (const ann of annotations) {
+    // Bulk-insert proteins, then bulk-insert each child table using the
+    // returned IDs. D1/Workers caps subrequests per invocation, so use a few
+    // large `.values([...])` calls instead of per-row statements. Chunking
+    // size chosen to keep each SQL statement under D1's 100kB-ish limit.
+    // D1 caps ~100 bound params per statement, and Workers cap ~50
+    // subrequests per invocation. Strategy: small per-statement chunks,
+    // grouped into a single subrequest via d1.batch().
+    const PROTEIN_CHUNK = 15; // 15 * 6 cols = 90 params
+    const CHILD_CHUNK = 10;   // 10 * 9 cols = 90 params
+    const BATCH_GROUP = 30;   // statements grouped into one subrequest
+
+    const proteinIdByProteinId: Record<string, number> = {};
+
+    for (let i = 0; i < annotations.length; i += PROTEIN_CHUNK) {
+      const batch = annotations.slice(i, i + PROTEIN_CHUNK);
       const inserted = await db
         .insert(proteins)
-        .values({
-          runId,
-          proteinId: ann.protein_id,
-          transcriptId: ann.transcript_id,
-          sequence: ann.sequence,
-          length: ann.length,
-          orfType: ann.orf_type,
-        })
+        .values(
+          batch.map((ann) => ({
+            runId,
+            proteinId: ann.protein_id,
+            transcriptId: ann.transcript_id,
+            sequence: ann.sequence,
+            length: ann.length,
+            orfType: ann.orf_type,
+          }))
+        )
         .returning()
-        .get();
+        .all();
+      for (const row of inserted) proteinIdByProteinId[row.proteinId] = row.id;
+    }
 
-      const pid = inserted.id;
+    // Flatten child rows, then chunk-insert.
+    const domainRows: (typeof cddDomains.$inferInsert)[] = [];
+    const siteRows: (typeof cddSites.$inferInsert)[] = [];
+    const hitRows: (typeof foldseekHits.$inferInsert)[] = [];
+    const prostt5Rows: (typeof prostt5Predictions.$inferInsert)[] = [];
 
+    for (const ann of annotations) {
+      const pid = proteinIdByProteinId[ann.protein_id];
+      if (pid == null) continue;
       for (const d of ann.cdd?.domains || []) {
-        await db
-          .insert(cddDomains)
-          .values({
-            proteinId: pid,
-            accession: d.accession,
-            name: d.name,
-            description: d.description || "",
-            superfamily: d.superfamily || "",
-            evalue: d.evalue,
-            bitscore: d.bitscore,
-            startPos: d.from,
-            endPos: d.to,
-          })
-          .run();
+        domainRows.push({
+          proteinId: pid,
+          accession: d.accession,
+          name: d.name,
+          description: d.description || "",
+          superfamily: d.superfamily || "",
+          evalue: d.evalue,
+          bitscore: d.bitscore,
+          startPos: d.from,
+          endPos: d.to,
+        });
       }
-
       for (const s of ann.cdd?.sites || []) {
-        await db
-          .insert(cddSites)
-          .values({
-            proteinId: pid,
-            siteType: s.type,
-            residues: JSON.stringify(s.residues),
-            description: s.description || "",
-          })
-          .run();
+        siteRows.push({
+          proteinId: pid,
+          siteType: s.type,
+          residues: JSON.stringify(s.residues),
+          description: s.description || "",
+        });
       }
-
       for (const h of ann.foldseek?.hits || []) {
-        await db
-          .insert(foldseekHits)
-          .values({
-            proteinId: pid,
-            targetId: h.target_id,
-            targetName: h.target_name || "",
-            identity: h.identity,
-            evalue: h.evalue,
-            alignmentLength: h.alignment_length,
-            taxonomy: h.taxonomy || "",
-          })
-          .run();
+        hitRows.push({
+          proteinId: pid,
+          targetId: h.target_id,
+          targetName: h.target_name || "",
+          identity: h.identity,
+          evalue: h.evalue,
+          alignmentLength: h.alignment_length,
+          taxonomy: h.taxonomy || "",
+        });
       }
-
       if (ann.prostt5?.has_prediction && ann.prostt5?.sequence_3di) {
-        await db
-          .insert(prostt5Predictions)
-          .values({
-            proteinId: pid,
-            sequence3di: ann.prostt5.sequence_3di,
-          })
-          .run();
+        prostt5Rows.push({ proteinId: pid, sequence3di: ann.prostt5.sequence_3di });
       }
+    }
+
+    // Build a single flat list of INSERT statements, then ship them in
+    // groups of BATCH_GROUP via d1.batch() so each group = 1 subrequest.
+    type Stmt = ReturnType<ReturnType<typeof db.insert>["values"]>;
+    const stmts: Stmt[] = [];
+
+    for (let i = 0; i < domainRows.length; i += CHILD_CHUNK) {
+      const c = domainRows.slice(i, i + CHILD_CHUNK);
+      if (c.length > 0) stmts.push(db.insert(cddDomains).values(c));
+    }
+    for (let i = 0; i < siteRows.length; i += CHILD_CHUNK) {
+      const c = siteRows.slice(i, i + CHILD_CHUNK);
+      if (c.length > 0) stmts.push(db.insert(cddSites).values(c));
+    }
+    for (let i = 0; i < hitRows.length; i += CHILD_CHUNK) {
+      const c = hitRows.slice(i, i + CHILD_CHUNK);
+      if (c.length > 0) stmts.push(db.insert(foldseekHits).values(c));
+    }
+    for (let i = 0; i < prostt5Rows.length; i += CHILD_CHUNK) {
+      const c = prostt5Rows.slice(i, i + CHILD_CHUNK);
+      if (c.length > 0) stmts.push(db.insert(prostt5Predictions).values(c));
+    }
+
+    for (let i = 0; i < stmts.length; i += BATCH_GROUP) {
+      const group = stmts.slice(i, i + BATCH_GROUP);
+      if (group.length === 0) continue;
+      // drizzle D1 batch expects a non-empty tuple; cast is fine here.
+      // @ts-expect-error drizzle batch overloads need a tuple type
+      await db.batch(group);
     }
 
     // Update run: mark completed, set totals, clear stale error
@@ -270,20 +306,26 @@ export async function POST(
         .run();
     }
 
-    // Ingest logs if provided (idempotent: wipe + insert)
+    // Ingest logs (idempotent: wipe + grouped batch insert)
     if (logs && logs.length > 0) {
       await db.delete(pipelineLogs).where(eq(pipelineLogs.runId, runId)).run();
-      for (const entry of logs) {
-        await db
-          .insert(pipelineLogs)
-          .values({
-            runId,
-            timestamp: entry.timestamp,
-            level: entry.level || "info",
-            source: entry.source || "nextflow",
-            message: entry.message,
-          })
-          .run();
+      const LOG_CHUNK = 15; // 15 * 5 cols = 75 params
+      const logStmts: Stmt[] = [];
+      for (let i = 0; i < logs.length; i += LOG_CHUNK) {
+        const chunk = logs.slice(i, i + LOG_CHUNK).map((e) => ({
+          runId,
+          timestamp: e.timestamp,
+          level: e.level || "info",
+          source: e.source || "nextflow",
+          message: e.message,
+        }));
+        if (chunk.length > 0) logStmts.push(db.insert(pipelineLogs).values(chunk));
+      }
+      for (let i = 0; i < logStmts.length; i += BATCH_GROUP) {
+        const group = logStmts.slice(i, i + BATCH_GROUP);
+        if (group.length === 0) continue;
+        // @ts-expect-error drizzle batch overloads need a tuple type
+        await db.batch(group);
       }
     }
 

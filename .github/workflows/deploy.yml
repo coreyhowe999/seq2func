@@ -1,4 +1,4 @@
-name: Deploy to Cloud Run
+name: Deploy web to Cloudflare Pages
 
 on:
   push:
@@ -8,52 +8,33 @@ on:
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
-env:
-  PROJECT_ID: seq2func
-  REGION: us-central1
-  SERVICE_NAME: seq2func-web
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
+      deployments: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          node-version: 22
 
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
-
-      - name: Build and Push Docker image
+      - name: Install dependencies
         working-directory: web
-        run: |
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/nf-transcriptome/${{ env.SERVICE_NAME }}:${{ github.sha }}"
-          docker build -t $IMAGE .
-          docker push $IMAGE
+        run: npm install --legacy-peer-deps --no-audit --no-fund
 
-      - name: Deploy to Cloud Run
-        run: |
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/nf-transcriptome/${{ env.SERVICE_NAME }}:${{ github.sha }}"
-          # Update the image only. Env vars are managed via the Cloud Run
-          # console / `gcloud run services update` — the prod config (real DB,
-          # LOCAL_DB_PATH=/tmp/data/local.db) must NOT be clobbered on deploy.
-          gcloud run deploy ${{ env.SERVICE_NAME }} \
-            --image=$IMAGE \
-            --region=${{ env.REGION }} \
-            --platform=managed \
-            --allow-unauthenticated \
-            --port=8080 \
-            --memory=512Mi \
-            --min-instances=0 \
-            --max-instances=3
+      - name: Build with @cloudflare/next-on-pages
+        working-directory: web
+        run: npx @cloudflare/next-on-pages
+
+      - name: Deploy to Cloudflare Pages
+        working-directory: web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler pages deploy .vercel/output/static --project-name=seq2func --branch=main --commit-dirty=true
